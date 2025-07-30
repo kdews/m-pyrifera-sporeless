@@ -85,32 +85,6 @@ if (dir.exists(outdir)) {
   all_eff_impact_type_plot <- paste0(outdir, all_eff_impact_type_plot)
 }
 
-# Functions
-# Selecting function for columns containing commas in any values
-contains_commas <- function(df) {
-  nms <- df %>%
-    select(where(is.character)) %>%
-    keep(~ any(replace_na(str_detect(.x, ","), FALSE))) %>%
-    names()
-  # Include ALT
-  nms <- nms[nms %in% c(info_names, "ALT")]
-  # Don't include snpEff colnames
-  nms <- nms[!(nms %in% c("ANN", "LOF", "NMD"))]
-}
-# Fix long labels for plotting
-pretty_labs <- function(my_vector) {
-  my_vector %>%
-    # Remove odd characters
-    str_replace_all(c(
-      "_variant" = "",
-      "_" = " ",
-      "&" = " & "
-    )) %>%
-    str_replace_all(regex("prime", ignore_case = T), "'")
-    # # Wrap long labels
-    # str_wrap(width = 20)
-}
-
 # Standard vectors of column names
 # GFF3
 gff_names <-
@@ -235,6 +209,32 @@ meiotic_terms <- c(
   "Hop1",
   "Smc5"
 )
+
+# Functions
+# Selecting function for columns containing commas in any values
+contains_commas <- function(df) {
+  nms <- df %>%
+    select(where(is.character)) %>%
+    keep(~ any(replace_na(str_detect(.x, ","), FALSE))) %>%
+    names()
+  # Include ALT
+  nms <- nms[nms %in% c(info_names, "ALT")]
+  # Don't include snpEff colnames
+  nms <- nms[!(nms %in% c("ANN", "LOF", "NMD"))]
+}
+# Fix long labels for plotting
+pretty_labs <- function(my_vector) {
+  my_vector %>%
+    # Remove odd characters
+    str_replace_all(c(
+      "_variant" = "",
+      "_" = " ",
+      "&" = " & "
+    )) %>%
+    str_replace_all(regex("prime", ignore_case = T), "'")
+  # # Wrap long labels
+  # str_wrap(width = 20)
+}
 
 # Data analysis
 # Save simplified table of sample IDs and gametophyte codes
@@ -1052,4 +1052,4 @@ split_sub_vcf <- split_sub_vcf %>%
 # vroom_write(split_sub_vcf, split_sub_vcf_file, delim = "\t")
 
 
-View(split_sub_vcf[1,])
+split_sub_vcf[1,] %>% View()
