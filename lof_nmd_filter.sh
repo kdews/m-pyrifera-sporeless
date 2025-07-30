@@ -71,7 +71,7 @@ CURDIR="$(pwd)"
 echo "Current directory: $CURDIR"
 # Create temporary working directory in /tmp filesystem
 # (Avoids mmap errors with BLAST in /scratch1 and /project)
-WORKDIR="/tmp/${USER}/${SLURM_JOB_NAME}"
+WORKDIR="/tmp/$USER"
 mkdir -p "$WORKDIR"
 cd "$WORKDIR" || exit 1
 echo "Temporary working directory: $WORKDIR"
@@ -139,3 +139,8 @@ echo
 # Only copy/update files if newer (-u)
 echo "Copying output in $WORKDIR to $CURDIR"
 rsync -htu --progress "$WORKDIR/"* "$CURDIR/"
+# Clean up /tmp
+if [[ -d "$WORKDIR" ]]; then
+    echo "Cleaning up $WORKDIR"
+    rm -rfv "$WORKDIR"
+fi

@@ -41,7 +41,7 @@ CURDIR="$(pwd)"
 echo "Current directory: $CURDIR"
 # Create temporary working directory in /tmp filesystem
 # (Avoids mmap errors with BLAST in /scratch1 and /project)
-WORKDIR="/tmp/$USER/${SLURM_JOB_NAME}_$SLURM_JOB_ID"
+WORKDIR="/tmp/$USER"
 mkdir -p "$WORKDIR"
 cd "$WORKDIR" || exit 1
 echo "Temporary working directory: $WORKDIR"
@@ -86,10 +86,13 @@ else
 fi
 
 # Index bgzipped VCF with bcftools
-out_idx="$out_vcf.csi"
+# Need tabix format for snpEff/SnpSift
+out_idx="$out_vcf.tbi"
+# out_idx="$out_vcf.csi"
 cmd=(
       "bcftools"
       "index"
+      --tbi
       "-f"
       "--threads"
       "$nthrd"
@@ -103,4 +106,14 @@ echo
 
 # Copy output from /tmp to current directory, preserving timestamps (-t)
 echo "Copying output in $WORKDIR/ to $CURDIR/"
-rsync -ht --progress "$out_vcf" "$out_idx" "$CURDIR/"
+rsync -htu --progress "$out_vcf" "$out_idx" "$CURDIR/"
+# Clean up /tmp
+if [[ -d "$WORKDIR" ]]; then
+    echo "Cleaning up $WORKDIR"
+    rm -rfv "$WORKDIR"
+fi
+
+# Done
+echo
+echo "Finished at:"
+date

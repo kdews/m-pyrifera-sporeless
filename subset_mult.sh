@@ -21,6 +21,7 @@ fi
 
 # Raw input VCF
 raw_vcf="raw_haploid_559_indv_on_CI_03_genome_final.vcf.gz"
+# Output subset VCFs
 mult_snps="mult_snps.vcf.gz"
 mult_indels="mult_indels.vcf.gz"
 
