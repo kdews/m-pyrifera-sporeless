@@ -97,6 +97,20 @@ gff_names <-
     "Strand",
     "Phase",
     "Attributes")
+# FORMAT column names
+format_names <-
+  c(
+    # Genotype
+    "GT",
+    # Allelic Depth
+    "AD",
+    # Read Depth
+    "DP",
+    # Genotype Quality
+    "GQ",
+    # Phred-scaled Genotype Likelihood
+    "PL"
+  )
 # INFO column patterns
 info_names <-
   c(
@@ -921,6 +935,8 @@ sub_vcf_raw <- vroom(sub_vcf_file, delim = "\t", comment = "##")
 sub_vcf <- sub_vcf_raw %>%
   # Remove remaining "#" in colnames
   rename_with(~ gsub("#", "", .)) %>%
+  # Mark original row IDs
+  mutate(orig_row = row_number(), .before = "CHROM") %>%
   # Drop irrelevant cols
   select(-c(ID, FILTER))
 print(paste("Colnames:", paste(colnames(sub_vcf), collapse = " ")))
@@ -948,7 +964,14 @@ sub_vcf <- sub_vcf %>%
 # Second reformat: Decompose VCF
 sub_vcf <- sub_vcf %>%
   # Separate into rows when multiple ALT per variant
-  separate_longer_delim(cols = all_of(contains_commas(.)), delim = ",")
+  separate_longer_delim(
+    cols = all_of(contains_commas(.)),
+    delim = ","
+  ) %>%
+  # Mark index of each allele split by ","
+  group_by(orig_row) %>%
+  mutate(decomp_index = row_number(), .after = orig_row) %>%
+  ungroup()
 # Third reformat: Split ANN col
 split_sub_vcf <- sub_vcf %>%
   # Separate into rows when multiple ANN per variant
@@ -1052,4 +1075,14 @@ split_sub_vcf <- split_sub_vcf %>%
 # vroom_write(split_sub_vcf, split_sub_vcf_file, delim = "\t")
 
 
-split_sub_vcf[1,] %>% View()
+split_sub_vcf %>%
+  # Decompose genotypes for each individual
+  separate_wider_delim(
+    cols = all_of(matches("\\d+")),
+    delim = ":",
+    names = format_names,
+    names_sep = "_"
+  )
+  # Check for decomp_index == GT to mark genotypes with allele
+  
+  
