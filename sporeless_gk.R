@@ -936,7 +936,7 @@ sub_vcf <- sub_vcf_raw %>%
   # Remove remaining "#" in colnames
   rename_with(~ gsub("#", "", .)) %>%
   # Mark original row IDs
-  mutate(orig_row = row_number(), .before = "CHROM") %>%
+  mutate(ROW_ID = row_number(), .before = "CHROM") %>%
   # Drop irrelevant cols
   select(-c(ID, FILTER))
 print(paste("Colnames:", paste(colnames(sub_vcf), collapse = " ")))
@@ -969,8 +969,8 @@ sub_vcf <- sub_vcf %>%
     delim = ","
   ) %>%
   # Mark index of each allele split by ","
-  group_by(orig_row) %>%
-  mutate(decomp_index = row_number(), .after = orig_row) %>%
+  group_by(ROW_ID) %>%
+  mutate(ALT_IDX = row_number(), .after = ALT) %>%
   ungroup()
 # Third reformat: Split ANN col
 split_sub_vcf <- sub_vcf %>%
@@ -1082,7 +1082,7 @@ split_sub_vcf %>%
     delim = ":",
     names = format_names,
     names_sep = "_"
-  )
-  # Check for decomp_index == GT to mark genotypes with allele
-  
+  ) %>%
+  # Check for ALT_IDX == GT to mark genotypes with allele
+  mutate(N_ALT = sum(c_across(ends_with("_GT")) == ALT_IDX), .after = ALT)
   
