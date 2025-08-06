@@ -249,6 +249,52 @@ pretty_labs <- function(my_vector) {
   # # Wrap long labels
   # str_wrap(width = 20)
 }
+# Parse REF and ALT for AD and PL columns
+parseRefAlt <- function(.data, vars) {
+  for (var in vars) {
+    ad_col <- paste0(var, "AD")
+    pl_col <- paste0(var, "PL")
+    gt_col <- paste0(var, "GT")
+    ad_ref_col <- paste0(ad_col, "_REF")
+    ad_alt_col <- paste0(ad_col, "_ALT")
+    pl_ref_col <- paste0(pl_col, "_REF")
+    pl_alt_col <- paste0(pl_col, "_ALT")
+    .data <- .data %>%
+      rowwise() %>%
+      mutate(
+        !!ad_ref_col := if (is.na(.data[[ad_col]]))
+                          NA
+                        else
+                          as.integer(str_split_i(.data[[ad_col]], ",", 1)),
+        !!ad_alt_col := if (is.na(.data[[gt_col]]) ||
+                            is.na(.data[[ad_col]]) ||
+                            .data[[gt_col]] == 0)
+                          NA
+                        else
+                          as.integer(
+                            str_split_i(
+                              .data[[ad_col]], ",", .data[[gt_col]] + 1
+                            )
+                          ),
+        !!pl_ref_col := if (is.na(.data[[pl_col]]))
+                          NA
+                        else
+                          as.integer(str_split_i(.data[[pl_col]], ",", 1)),
+        !!pl_alt_col := if (is.na(.data[[gt_col]]) ||
+                            is.na(.data[[pl_col]]) ||
+                            .data[[gt_col]] == 0)
+                          NA
+                        else
+                          as.integer(
+                            str_split_i(
+                              .data[[pl_col]], ",", .data[[gt_col]] + 1
+                            )
+                          )
+      ) %>%
+      ungroup()
+  }
+  .data
+}
 
 # Data analysis
 # Save simplified table of sample IDs and gametophyte codes
@@ -1075,14 +1121,39 @@ split_sub_vcf <- split_sub_vcf %>%
 # vroom_write(split_sub_vcf, split_sub_vcf_file, delim = "\t")
 
 
-split_sub_vcf %>%
-  # Decompose genotypes for each individual
+# Parse genotype columns for each individual
+split_sub_vcf <- split_sub_vcf %>%
+  # Separate "FORMAT" specified IDs
   separate_wider_delim(
     cols = all_of(matches("\\d+")),
     delim = ":",
     names = format_names,
     names_sep = "_"
   ) %>%
-  # Check for ALT_IDX == GT to mark genotypes with allele
-  mutate(N_ALT = sum(c_across(ends_with("_GT")) == ALT_IDX), .after = ALT)
-  
+  # Sub missing GT and PL (.) with NA
+  mutate(
+    across(.cols = ends_with(c("_GT", "PL")), .fns = ~ gsub("\\.", NA, .))
+  ) %>%
+  # Coerce genotype columns to integer class
+  mutate(across(.cols = ends_with("_GT"), .fns = as.integer)) %>%
+  # Guess types for newly split character columns with readr::parse_guess
+  mutate(across(.cols = where(is.character), .fns = parse_guess)) %>%
+  # Check for ALT_IDX == GT to sum number of genotypes with given allele
+  rowwise() %>%
+  mutate(
+    N_ALT = sum(c_across(ends_with("_GT")) == ALT_IDX, na.rm = T),
+    .after = ALT
+  ) %>%
+  ungroup()
+# Parse columns with REF and ALT, matching GT to ALT_IDX
+gt_prefix <- names(split_sub_vcf) %>%
+  str_subset("_GT$") %>%
+  sub("GT$", "", .)
+split_sub_vcf2 <- split_sub_vcf %>%
+  parseRefAlt(gt_prefix)
+split_sub_vcf2 %>%
+  select(starts_with("1_"))
+
+
+
+
