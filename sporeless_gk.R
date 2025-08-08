@@ -262,7 +262,8 @@ parseRefAlt <- function(.data, vars) {
     .data <- .data %>%
       rowwise() %>%
       mutate(
-        !!ad_ref_col := if (is.na(.data[[ad_col]]))
+        !!ad_ref_col := if (is.na(.data[[ad_col]]) ||
+                            is.na(.data[[gt_col]]))
                           NA
                         else
                           as.integer(str_split_i(.data[[ad_col]], ",", 1)),
@@ -276,7 +277,8 @@ parseRefAlt <- function(.data, vars) {
                               .data[[ad_col]], ",", .data[[gt_col]] + 1
                             )
                           ),
-        !!pl_ref_col := if (is.na(.data[[pl_col]]))
+        !!pl_ref_col := if (is.na(.data[[pl_col]]) ||
+                            is.na(.data[[gt_col]]))
                           NA
                         else
                           as.integer(str_split_i(.data[[pl_col]], ",", 1)),
@@ -1087,7 +1089,7 @@ split_sub_vcf <- split_sub_vcf %>%
       nchar(REF) != nchar(ALT) ~ "INDEL",
       .default = "SNP"
     ),
-    .after = ALT
+    .after = ALT_IDX
   )
 # Parse Error/Warning/Info into separate columns
 split_sub_vcf <- split_sub_vcf %>%
@@ -1117,8 +1119,6 @@ debug_df <- split_sub_vcf %>%
 split_sub_vcf <- split_sub_vcf %>%
   select(!starts_with("Debug")) %>%
   distinct()
-# # Save split table
-# vroom_write(split_sub_vcf, split_sub_vcf_file, delim = "\t")
 
 
 # Parse genotype columns for each individual
@@ -1142,18 +1142,87 @@ split_sub_vcf <- split_sub_vcf %>%
   rowwise() %>%
   mutate(
     N_ALT = sum(c_across(ends_with("_GT")) == ALT_IDX, na.rm = T),
-    .after = ALT
+    .after = ALT_IDX
   ) %>%
   ungroup()
 # Parse columns with REF and ALT, matching GT to ALT_IDX
 gt_prefix <- names(split_sub_vcf) %>%
   str_subset("_GT$") %>%
   sub("GT$", "", .)
-split_sub_vcf2 <- split_sub_vcf %>%
+split_sub_vcf <- split_sub_vcf %>%
   parseRefAlt(gt_prefix)
-split_sub_vcf2 %>%
-  select(starts_with("1_"))
 
+# Save parsed table
+vroom_write(split_sub_vcf, split_sub_vcf_file, delim = "\t")
 
+split_sub_vcf %>%
+  distinct(Protein_ID)
+# Merge with protein annotations
+split_sub_vcf %>%
+  select(
+    c(
+      ROW_ID,
+      CHROM,
+      POS,
+      REF,
+      ALT,
+      N_ALT,
+      Variant_Type,
+      ALT_IDX,
+      QUAL,
+      Allele,
+      Effect,
+      Impact,
+      Protein_ID,
+      Gene_ID,
+      Feature_Type,
+      Feature_ID,
+      Transcript_BioType,
+      `Exon_or_Intron_Rank/Total`,
+      HGVS.c,
+      HGVS.p,
+      `cDNA_position/cDNA_len`,
+      `CDS_position/CDS_len`,
+      `Protein_position/Protein_len`,
+      Dist_to_Feature,
+      LOF,
+      BaseQRankSum,
+      MQRankSum,
+      ReadPosRankSum,
+      NMD
+    )
+  ) %>%
+  View()
 
+c(
+  ROW_ID,
+  CHROM,
+  POS,
+  REF,
+  ALT,
+  N_ALT,
+  Variant_Type,
+  ALT_IDX,
+  QUAL,
+  Allele,
+  Effect,
+  Impact,
+  Protein_ID,
+  Gene_ID,
+  Feature_Type,
+  Feature_ID,
+  Transcript_BioType,
+  `Exon_or_Intron_Rank/Total`,
+  HGVS.c,
+  HGVS.p,
+  `cDNA_position/cDNA_len`,
+  `CDS_position/CDS_len`,
+  `Protein_position/Protein_len`,
+  Dist_to_Feature,
+  LOF,
+  BaseQRankSum,
+  MQRankSum,
+  ReadPosRankSum,
+  NMD
+)
 
