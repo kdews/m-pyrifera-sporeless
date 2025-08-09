@@ -70,10 +70,10 @@ all_meiotic_prot_annot_file <- "all_meiotic_proteins.tab"
 ann_vcf_base <- gsub("\\..*", "", basename(ann_vcf_meta_file))
 subset_tab_base <- "high_eff_subset"
 subset_tab_file <- paste0(subset_tab_base, ".tsv")
-sub_vcf_file <- paste0(subset_tab_base, "_", ann_vcf_base, ".ann.vcf.gz")
-split_sub_vcf_file <- paste0(
-  subset_tab_base, "_", ann_vcf_base, ".split.tsv.gz"
-)
+sub_vcf_base <- paste0(subset_tab_base, "_", ann_vcf_base)
+sub_vcf_file <- paste0(sub_vcf_base, ".ann.vcf.gz")
+split_sub_vcf_file <- paste0(sub_vcf_base, ".split.tsv.gz")
+split_sub_col_types_file <- paste0(sub_vcf_base, ".split.col_types.tsv")
 # If exists, prepend output directory to output filenames of plots
 if (dir.exists(outdir)) {
   debug_plot <- paste0(outdir, debug_plot)
@@ -211,17 +211,39 @@ lof_nmd_effs <-
   )
 # Meiosis-associated search terms
 meiotic_terms <- c(
-  "meio",
-  "reproduct",
-  "double-strand break",
-  " homologous recomb",
   "Spo11",
+  "Mre11",
+  "Rad50",
   "Rad51",
   "RecA",
   "DMC1",
   "Red1",
   "Hop1",
-  "Smc5"
+  "Smc5",
+  "MutS",
+  "meio",
+  "reproduct",
+  "double-strand break",
+  " homologous recomb"
+)
+# Rank meiotic terms by importance
+meiotic_rank <- c(rep(1, 9), 2, 2, 3, 3)
+names(meiotic_rank) <- meiotic_terms
+# snpEff ANN severity scale
+severity_rank <- c(
+  "stop_gained" = 1,
+  "frameshift_variant" = 2,
+  "stop_lost" = 3,
+  "start_lost" = 4,
+  "splice_acceptor_variant" = 5,
+  "splice_donor_variant" = 6,
+  "exon_loss_variant" = 7,
+  "splice_region_variant" = 8,
+  "conservative_inframe_deletion" = 9,
+  "conservative_inframe_insertion" = 10,
+  "5_prime_UTR_variant" = 11,
+  "3_prime_UTR_variant" = 12,
+  "intron_variant" = 13
 )
 
 # Functions
@@ -250,7 +272,10 @@ pretty_labs <- function(my_vector) {
   # str_wrap(width = 20)
 }
 # Parse REF and ALT for AD and PL columns
-parseRefAlt <- function(.data, vars) {
+parseRefAlt <- function(.data) {
+  vars <- names(.data) %>%
+    str_subset("_GT$") %>%
+    sub("GT$", "", .)
   for (var in vars) {
     ad_col <- paste0(var, "AD")
     pl_col <- paste0(var, "PL")
@@ -400,17 +425,17 @@ if (!file.exists(all_meiotic_prot_annot_file)) {
     # Remove "#" from colnames
     rename_with(~ gsub("#", "", .)) %>%
     # Collapse to one line per proteinId
-    summarize(IPR=paste(iprDesc, collapse = ";"), .by = proteinId)
+    summarize(IPR=paste(na.omit(iprDesc), collapse = ";"), .by = proteinId)
   kegg_tab <- read_tsv(kegg_tab_file, na = c("\\N")) %>%
     # Remove "#" from colnames
     rename_with(~ gsub("#", "", .)) %>%
     # Collapse to one line per proteinId
-    summarize(KEGG=paste(definition, collapse = ";"), .by = proteinId)
+    summarize(KEGG=paste(na.omit(definition), collapse = ";"), .by = proteinId)
   kog_tab <- read_tsv(kog_tab_file, na = c("\\N")) %>%
     # Remove "#" from colnames
     rename_with(~ gsub("#", "", .)) %>%
     # Collapse to one line per proteinId
-    summarize(KOG=paste(kogdefline, collapse = ";"), .by = proteinId)
+    summarize(KOG=paste(na.omit(kogdefline), collapse = ";"), .by = proteinId)
   # Find protein IDs that match search terms
   all_meiotic_prot_ids <- rbind(
     go_tab %>%
@@ -965,264 +990,321 @@ if (!file.exists(subset_tab_file)) {
 }
 
 # Parse subset of full annotated VCF (including genotypes)
-# Verify subsetted VCF exists
-if (!file.exists(sub_vcf_file)) {
-  stop(paste("Subset", sub_vcf_file, "with subset_high_eff.sh before running."))
+if (!file.exists(split_sub_vcf_file)) {
+  # Verify subsetted VCF exists
+  if (!file.exists(sub_vcf_file)) {
+    stop(paste("Subset", sub_vcf_file, "with subset_high_eff.sh before running."))
+  }
+  # # Ensure bgzip is accessible
+  # if (system("bgzip --version") != 0) {
+  #   stop("bgzip is not available in this environment.")
+  # }
+  # # Use pipe("bgzip ...") to decompress bgzipped VCF
+  # sub_vcf_raw <-
+  #   vroom(pipe(paste(
+  #     "bgzip -@ $SLURM_CPUS_PER_TASK -d -c", sub_vcf_file
+  #   )), delim = "\t", comment = "##")
+  sub_vcf_raw <- vroom(sub_vcf_file, delim = "\t", comment = "##")
+  sub_vcf <- sub_vcf_raw %>%
+    # Remove remaining "#" in colnames
+    rename_with(~ gsub("#", "", .)) %>%
+    # Mark original row IDs
+    mutate(ROW_ID = row_number(), .before = "CHROM") %>%
+    # Drop irrelevant cols
+    select(-c(ID, FILTER))
+  print(paste("Colnames:", paste(colnames(sub_vcf), collapse = " ")))
+  # Separate INFO col into columns named by regular expression (e.g., AC=##)
+  sub_vcf <- sub_vcf %>%
+    mutate(INFO = str_split(INFO, ";") %>%
+             map(~ {
+               key_vals <- str_split_fixed(.x, "=", 2)
+               set_names(key_vals[, 2], key_vals[, 1])
+             })) %>%
+    unnest_wider(INFO, names_repair = "unique")
+  print(
+    paste("Colnames (INFO parsed):", paste(colnames(sub_vcf), collapse = " "))
+  )
+  # Strip special characters
+  sub_vcf <- sub_vcf %>%
+    # Remove parentheses from LOF and NMD cols
+    mutate(across(c(LOF, NMD), ~ gsub("\\(|\\)", "", .))) %>%
+    # Keep only protein ID numbers from "jgi.p|Macpyr2|####" for downstream
+    mutate(
+      ANN = gsub("jgi\\.p\\|Macpyr2\\|", "", ANN),
+      LOF = gsub("jgi\\.p_Macpyr2_", "", LOF),
+      NMD = gsub("jgi\\.p_Macpyr2_", "", NMD)
+    )
+  # Second reformat: Decompose VCF
+  sub_vcf <- sub_vcf %>%
+    # Separate into rows when multiple ALT per variant
+    separate_longer_delim(
+      cols = all_of(contains_commas(.)),
+      delim = ","
+    ) %>%
+    # Mark index of each allele split by ","
+    group_by(ROW_ID) %>%
+    mutate(ALT_IDX = row_number(), .after = ALT) %>%
+    ungroup()
+  # Third reformat: Split ANN col
+  split_sub_vcf <- sub_vcf %>%
+    # Separate into rows when multiple ANN per variant
+    separate_longer_delim(ANN, delim = ",") %>%
+    # Split ANN into named columns
+    separate_wider_delim(ANN, delim = "|", names = ann_names) %>%
+    # Keep only matching ANN annotations
+    filter(ALT == Allele)
+  # Fourth reformat: Split LOF & NMD cols
+  lof_df <- sub_vcf %>%
+    filter(!is.na(LOF)) %>%
+    select(CHROM, POS, ALT, LOF) %>%
+    # Separate into additional rows when multiple per variant
+    separate_longer_delim(LOF, delim = ",") %>%
+    # Split LOF into named columns
+    separate_wider_delim(LOF, delim = "|", names = lof_names)
+  nmd_df <- sub_vcf %>%
+    filter(!is.na(NMD)) %>%
+    select(CHROM, POS, ALT, NMD) %>%
+    # Separate into additional rows when multiple per variant
+    separate_longer_delim(NMD, delim = ",") %>%
+    # Split NMD into named columns
+    separate_wider_delim(NMD, delim = "|", names = nmd_names)
+  # Join LOF and NMD back to sub_vcf using Gene_ID and Protein_ID
+  split_sub_vcf <- split_sub_vcf %>%
+    left_join(
+      lof_df, by = c("CHROM", "POS", "ALT", "Gene_ID", "Protein_ID")
+    ) %>%
+    left_join(
+      nmd_df, by = c("CHROM", "POS", "ALT", "Gene_ID", "Protein_ID")
+    )
+  # Filter LOF & NMD cols
+  split_sub_vcf <- split_sub_vcf %>%
+    mutate(
+      isLOF = case_when(
+        !is.na(Total_Transcripts_LOF) &
+          !is.na(HGVS.c) &
+          # # Filter out 3' UTR LOF hits
+          # !grepl("c\\.\\*", HGVS.c) &
+          # Keep LOF based on Effect criteria
+          grepl(paste(lof_nmd_effs, collapse = "|"), Effect) ~ T,
+        .default = F
+      ),
+      isNMD = case_when(
+        !is.na(Total_Transcripts_NMD) &
+          !is.na(HGVS.c) &
+          # Filter out 3' UTR NMD hits!grepl("c\\.\\*", HGVS.c) &
+          # Keep NMD baesd on Effect criteria
+          grepl(paste(lof_nmd_effs, collapse = "|"), Effect) ~ T,
+        .default = F
+      )
+    ) %>%
+    mutate(
+      LOF = ifelse(isLOF, LOF, NA),
+      Total_Transcripts_LOF = ifelse(isLOF, Total_Transcripts_LOF, NA),
+      Percent_Transcripts_LOF = ifelse(isLOF, Percent_Transcripts_LOF, NA),
+      NMD = ifelse(isNMD, NMD, NA),
+      Total_Transcripts_NMD = ifelse(isNMD, Total_Transcripts_NMD, NA),
+      Percent_Transcripts_NMD = ifelse(isNMD, Percent_Transcripts_NMD, NA)
+    ) %>%
+    # Guess types for newly split character columns with readr::parse_guess
+    mutate(across(.cols = where(is.character), .fns = parse_guess)) %>%
+    # Filter for only HIGH impact variants
+    filter(Impact == "HIGH")
+  # Annotate variant types (e.g., SNP, INDEL)
+  split_sub_vcf <- split_sub_vcf %>%
+    mutate(
+      Variant_Type = case_when(
+        ALT == "*" ~ "INDEL",
+        nchar(REF) != nchar(ALT) ~ "INDEL",
+        .default = "SNP"
+      ),
+      .after = ALT_IDX
+    )
+  # Parse Error/Warning/Info into separate columns
+  split_sub_vcf <- split_sub_vcf %>%
+    mutate(Debug =
+             case_when(!is.na(Debug) ~ str_split(Debug, "&") %>%
+                         map(~ {
+                           key_vals <- str_split_fixed(.x, "_", 2)
+                           set_names(key_vals[, 2], key_vals[, 1])
+                         }), .default = NA)) %>%
+    unnest_longer(
+      Debug,
+      values_to = "Debug_Message",
+      indices_to = "Debug_Code",
+      keep_empty = T
+    )
+  debug_df <- split_sub_vcf %>%
+    select(CHROM,
+           POS,
+           REF,
+           ALT,
+           Effect,
+           Protein_ID,
+           Debug_Message,
+           Debug_Code)
+  # # Save debugging messages
+  # vroom_write(debug_df, debug_df_file, delim = "\t")
+  split_sub_vcf <- split_sub_vcf %>%
+    select(!starts_with("Debug")) %>%
+    distinct()
+  # Parse genotype columns for each individual
+  split_sub_vcf <- split_sub_vcf %>%
+    # Separate "FORMAT" specified IDs
+    separate_wider_delim(
+      cols = all_of(matches("\\d+")),
+      delim = ":",
+      names = format_names,
+      names_sep = "_"
+    ) %>%
+    # Sub missing GT and PL (.) with NA
+    mutate(
+      across(.cols = ends_with(c("_GT", "PL")), .fns = ~ gsub("\\.", NA, .))
+    ) %>%
+    # Coerce genotype columns to integer class
+    mutate(across(.cols = ends_with("_GT"), .fns = as.integer)) %>%
+    # Guess types for newly split character columns with readr::parse_guess
+    mutate(across(.cols = where(is.character), .fns = parse_guess)) %>%
+    # Check for ALT_IDX == GT to sum number of genotypes with given allele
+    rowwise() %>%
+    mutate(
+      N_ALT = sum(c_across(ends_with("_GT")) == ALT_IDX, na.rm = T),
+      .after = ALT_IDX
+    ) %>%
+    ungroup()
+  # Parse columns with REF and ALT, matching GT to ALT_IDX
+  split_sub_vcf <- split_sub_vcf %>%
+    parseRefAlt()
+  # Save split table column types
+  split_sub_col_types <- sapply(split_sub_vcf, function(x) class(x)[1])
+  split_sub_col_types <- data.frame(column = names(split_sub_col_types),
+                                    type = unname(split_sub_col_types))
+  write.table(
+    split_sub_col_types,
+    split_sub_col_types_file,
+    sep = "\t",
+    row.names = F,
+    quote = F
+  )
+  # Save parsed table
+  vroom_write(split_sub_vcf, split_sub_vcf_file, delim = "\t")
+} else {
+  # Load col type metadata
+  split_sub_col_types <- read.delim(
+    split_sub_col_types_file,
+    stringsAsFactors = F
+  )
+  # Create a `col_types` specification for vroom
+  vroom_col_types <- do.call(
+    cols, setNames(lapply(split_sub_col_types$type, function(t)
+      switch(
+        t,
+        character = col_character(),
+        numeric   = col_double(),
+        integer   = col_integer(),
+        logical   = col_logical(),
+        factor    = col_factor(),
+        Date      = col_date(),
+        col_guess()  # fallback
+      )), split_sub_col_types$column)
+  )
+  split_sub_vcf <- vroom(
+    split_sub_vcf_file,
+    delim = "\t",
+    col_types = vroom_col_types
+  )
 }
 
-# # Ensure bgzip is accessible
-# if (system("bgzip --version") != 0) {
-#   stop("bgzip is not available in this environment.")
-# }
-# # Use pipe("bgzip ...") to decompress bgzipped VCF
-# sub_vcf_raw <-
-#   vroom(pipe(paste(
-#     "bgzip -@ $SLURM_CPUS_PER_TASK -d -c", sub_vcf_file
-#   )), delim = "\t", comment = "##")
-sub_vcf_raw <- vroom(sub_vcf_file, delim = "\t", comment = "##")
-sub_vcf <- sub_vcf_raw %>%
-  # Remove remaining "#" in colnames
-  rename_with(~ gsub("#", "", .)) %>%
-  # Mark original row IDs
-  mutate(ROW_ID = row_number(), .before = "CHROM") %>%
-  # Drop irrelevant cols
-  select(-c(ID, FILTER))
-print(paste("Colnames:", paste(colnames(sub_vcf), collapse = " ")))
-# Separate INFO col into columns named by regular expression (e.g., AC=##)
-sub_vcf <- sub_vcf %>%
-  mutate(INFO = str_split(INFO, ";") %>%
-           map(~ {
-             key_vals <- str_split_fixed(.x, "=", 2)
-             set_names(key_vals[, 2], key_vals[, 1])
-           })) %>%
-  unnest_wider(INFO, names_repair = "unique")
-print(
-  paste("Colnames (INFO parsed):", paste(colnames(sub_vcf), collapse = " "))
+# Annotate split subset VCF lines with protein information
+new_cols <- grep(
+  "^CHROM$|^Protein_ID$|^Gene_ID$",
+  names(all_meiotic_prot_annot),
+  invert = T,
+  value = T
 )
-# Strip special characters
-sub_vcf <- sub_vcf %>%
-  # Remove parentheses from LOF and NMD cols
-  mutate(across(c(LOF, NMD), ~ gsub("\\(|\\)", "", .))) %>%
-  # Keep only protein ID numbers from "jgi.p|Macpyr2|####" for downstream
-  mutate(
-    ANN = gsub("jgi\\.p\\|Macpyr2\\|", "", ANN),
-    LOF = gsub("jgi\\.p_Macpyr2_", "", LOF),
-    NMD = gsub("jgi\\.p_Macpyr2_", "", NMD)
-  )
-# Second reformat: Decompose VCF
-sub_vcf <- sub_vcf %>%
-  # Separate into rows when multiple ALT per variant
-  separate_longer_delim(
-    cols = all_of(contains_commas(.)),
-    delim = ","
+annot_split_sub_vcf <- split_sub_vcf %>%
+  left_join(
+    filter(all_meiotic_prot_annot, Type == "gene"),
+    by = c("CHROM", "Protein_ID", "Gene_ID")
   ) %>%
-  # Mark index of each allele split by ","
-  group_by(ROW_ID) %>%
-  mutate(ALT_IDX = row_number(), .after = ALT) %>%
+  relocate(all_of(new_cols), .after = Gene_ID)
+test <- annot_split_sub_vcf %>%
+  rowwise() %>%
+  # mutate(
+  #   Effect_rank = str_split(Effect, "&"),
+  #   Effect_rank = min(severity_rank[Effect_rank], na.rm = T),
+  #   .before = 1
+  # ) %>%
+  mutate(
+    # Collapse selected columns into one string
+    combined_text = paste(
+      c_across(c(IPR, KEGG, GO, KOG, Protein_Product)),
+      collapse = " "
+    ),
+    # Find which patterns match this row
+    matches = list(
+      sapply(
+        names(meiotic_rank), function(term) {
+          str_detect(combined_text, fixed(term, ignore_case = TRUE))
+        }
+      )
+    ),
+    matches = list(names(meiotic_rank)[unlist(matches)]),
+    ann_rank = list(meiotic_rank[matches]),
+    # Assign min rank among matches (if no match, NA)
+    ann_rank = if (length(ann_rank) > 0)
+      min(ann_rank)
+    else
+      NA_integer_,
+    matches = paste(matches, collapse = ", ")
+  ) %>%
   ungroup()
-# Third reformat: Split ANN col
-split_sub_vcf <- sub_vcf %>%
-  # Separate into rows when multiple ANN per variant
-  separate_longer_delim(ANN, delim = ",") %>%
-  # Split ANN into named columns
-  separate_wider_delim(ANN, delim = "|", names = ann_names) %>%
-  # Keep only matching ANN annotations
-  filter(ALT == Allele)
-# Fourth reformat: Split LOF & NMD cols
-lof_df <- sub_vcf %>%
-  filter(!is.na(LOF)) %>%
-  select(CHROM, POS, ALT, LOF) %>%
-  # Separate into additional rows when multiple per variant
-  separate_longer_delim(LOF, delim = ",") %>%
-  # Split LOF into named columns
-  separate_wider_delim(LOF, delim = "|", names = lof_names)
-nmd_df <- sub_vcf %>%
-  filter(!is.na(NMD)) %>%
-  select(CHROM, POS, ALT, NMD) %>%
-  # Separate into additional rows when multiple per variant
-  separate_longer_delim(NMD, delim = ",") %>%
-  # Split NMD into named columns
-  separate_wider_delim(NMD, delim = "|", names = nmd_names)
-# Join LOF and NMD back to sub_vcf using Gene_ID and Protein_ID
-split_sub_vcf <- split_sub_vcf %>%
-  left_join(
-    lof_df, by = c("CHROM", "POS", "ALT", "Gene_ID", "Protein_ID")
-  ) %>%
-  left_join(
-    nmd_df, by = c("CHROM", "POS", "ALT", "Gene_ID", "Protein_ID")
-  )
-# Filter LOF & NMD cols
-split_sub_vcf <- split_sub_vcf %>%
-  mutate(
-    isLOF = case_when(
-      !is.na(Total_Transcripts_LOF) &
-        !is.na(HGVS.c) &
-        # Filter out 3' UTR LOF hits!grepl("c\\.\\*", HGVS.c) &
-        # Keep LOF baesd on Effect criteria
-        grepl(paste(lof_nmd_effs, collapse = "|"), Effect) ~ T,
-      .default = F
-    ),
-    isNMD = case_when(
-      !is.na(Total_Transcripts_NMD) &
-        !is.na(HGVS.c) &
-        # Filter out 3' UTR NMD hits!grepl("c\\.\\*", HGVS.c) &
-        # Keep NMD baesd on Effect criteria
-        grepl(paste(lof_nmd_effs, collapse = "|"), Effect) ~ T,
-      .default = F
-    )
-  ) %>%
-  mutate(
-    LOF = ifelse(isLOF, LOF, NA),
-    Total_Transcripts_LOF = ifelse(isLOF, Total_Transcripts_LOF, NA),
-    Percent_Transcripts_LOF = ifelse(isLOF, Percent_Transcripts_LOF, NA),
-    NMD = ifelse(isNMD, NMD, NA),
-    Total_Transcripts_NMD = ifelse(isNMD, Total_Transcripts_NMD, NA),
-    Percent_Transcripts_NMD = ifelse(isNMD, Percent_Transcripts_NMD, NA)
-  ) %>%
-  # Guess types for newly split character columns with readr::parse_guess
-  mutate(across(.cols = where(is.character), .fns = parse_guess))
-# Annotate variant types (e.g., SNP, INDEL)
-split_sub_vcf <- split_sub_vcf %>%
-  mutate(
-    Variant_Type = case_when(
-      ALT == "*" ~ "INDEL",
-      nchar(REF) != nchar(ALT) ~ "INDEL",
-      .default = "SNP"
-    ),
-    .after = ALT_IDX
-  )
-# Parse Error/Warning/Info into separate columns
-split_sub_vcf <- split_sub_vcf %>%
-  mutate(Debug =
-           case_when(!is.na(Debug) ~ str_split(Debug, "&") %>%
-                       map(~ {
-                         key_vals <- str_split_fixed(.x, "_", 2)
-                         set_names(key_vals[, 2], key_vals[, 1])
-                       }), .default = NA)) %>%
-  unnest_longer(
-    Debug,
-    values_to = "Debug_Message",
-    indices_to = "Debug_Code",
-    keep_empty = T
-  )
-debug_df <- split_sub_vcf %>%
-  select(CHROM,
-         POS,
-         REF,
-         ALT,
-         Effect,
-         Protein_ID,
-         Debug_Message,
-         Debug_Code)
-# # Save debugging messages
-# vroom_write(debug_df, debug_df_file, delim = "\t")
-split_sub_vcf <- split_sub_vcf %>%
-  select(!starts_with("Debug")) %>%
-  distinct()
 
 
-# Parse genotype columns for each individual
-split_sub_vcf <- split_sub_vcf %>%
-  # Separate "FORMAT" specified IDs
-  separate_wider_delim(
-    cols = all_of(matches("\\d+")),
-    delim = ":",
-    names = format_names,
-    names_sep = "_"
-  ) %>%
-  # Sub missing GT and PL (.) with NA
-  mutate(
-    across(.cols = ends_with(c("_GT", "PL")), .fns = ~ gsub("\\.", NA, .))
-  ) %>%
-  # Coerce genotype columns to integer class
-  mutate(across(.cols = ends_with("_GT"), .fns = as.integer)) %>%
-  # Guess types for newly split character columns with readr::parse_guess
-  mutate(across(.cols = where(is.character), .fns = parse_guess)) %>%
-  # Check for ALT_IDX == GT to sum number of genotypes with given allele
+helpme <- test %>%
+  # select(Protein_ID, ann_rank, matches, IPR, KEGG, GO, KOG, Protein_Product) %>%
+  filter(Protein_ID %in% meiotic_gene_bed$Protein_ID,
+         Type == "gene",
+         is.na(ann_rank)) %>%
+  select(Protein_ID, IPR, KEGG, GO, KOG, Protein_Product) %>%
+  distinct() %>%
   rowwise() %>%
   mutate(
-    N_ALT = sum(c_across(ends_with("_GT")) == ALT_IDX, na.rm = T),
-    .after = ALT_IDX
+    annotations = paste(na.omit(c_across(c(-Protein_ID))), collapse = ";")
   ) %>%
-  ungroup()
-# Parse columns with REF and ALT, matching GT to ALT_IDX
-gt_prefix <- names(split_sub_vcf) %>%
-  str_subset("_GT$") %>%
-  sub("GT$", "", .)
-split_sub_vcf <- split_sub_vcf %>%
-  parseRefAlt(gt_prefix)
+  ungroup() %>%
+  select(annotations)
+copilot_list <- unlist(strsplit("meiosis|meiotic|recombination|synaptonemal|crossover|homologous pairing|MSH4|MSH5|Spo11|Dmc1|Rad51|Rec8|Cohesin|SCC2|SCC3|HORMAD|ZIP1|ZIP3|ZMM|Hop1|Red1|Mer3|Mnd1|HOP2|SYCP|SYCE|telomere|chromosome segregation|gametogenesis|oogenesis|spermatogenesis", "\\|"))
+sapply(copilot_list, grep, helpme$annotations, value = T, simplify = F)
+grep("MSH4|MSH5", helpme$annotations, value = T)
+annot_split_sub_vcf %>%
+  filter(if_any(where(is.character), ~ grepl("involved in cellular and", .))) %>% 
+  View
 
-# Save parsed table
-vroom_write(split_sub_vcf, split_sub_vcf_file, delim = "\t")
-
-split_sub_vcf %>%
-  distinct(Protein_ID)
-# Merge with protein annotations
-split_sub_vcf %>%
+annot_split_sub_vcf %>%
   select(
-    c(
-      ROW_ID,
-      CHROM,
-      POS,
-      REF,
-      ALT,
-      N_ALT,
-      Variant_Type,
-      ALT_IDX,
-      QUAL,
-      Allele,
-      Effect,
-      Impact,
-      Protein_ID,
-      Gene_ID,
-      Feature_Type,
-      Feature_ID,
-      Transcript_BioType,
-      `Exon_or_Intron_Rank/Total`,
-      HGVS.c,
-      HGVS.p,
-      `cDNA_position/cDNA_len`,
-      `CDS_position/CDS_len`,
-      `Protein_position/Protein_len`,
-      Dist_to_Feature,
-      LOF,
-      BaseQRankSum,
-      MQRankSum,
-      ReadPosRankSum,
-      NMD
-    )
-  ) %>%
-  View()
+    ROW_ID,
+    POS,
+    Start,
+    End,
+    Gene_ID,
+    Type,
+    ID,
+    `Exon_or_Intron_Rank/Total`,
+    Effect
+  )
 
-c(
-  ROW_ID,
-  CHROM,
-  POS,
-  REF,
-  ALT,
-  N_ALT,
-  Variant_Type,
-  ALT_IDX,
-  QUAL,
-  Allele,
-  Effect,
-  Impact,
-  Protein_ID,
-  Gene_ID,
-  Feature_Type,
-  Feature_ID,
-  Transcript_BioType,
-  `Exon_or_Intron_Rank/Total`,
-  HGVS.c,
-  HGVS.p,
-  `cDNA_position/cDNA_len`,
-  `CDS_position/CDS_len`,
-  `Protein_position/Protein_len`,
-  Dist_to_Feature,
-  LOF,
-  BaseQRankSum,
-  MQRankSum,
-  ReadPosRankSum,
-  NMD
-)
-
+annot_split_sub_vcf %>%
+  rowid_to_column() %>%
+  filter(Type != "gene") %>%
+ggplot(aes(y = rowid)) +
+  geom_segment(
+    aes(
+      x = 0,
+      xend = End-Start,
+      yend = rowid,
+      color = Type
+    ),
+    linewidth = 1
+  ) +
+  geom_text(aes(x = POS-Start, label = ALT), color = "red") +
+  theme_classic()
