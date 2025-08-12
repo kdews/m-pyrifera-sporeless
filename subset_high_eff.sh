@@ -1,9 +1,8 @@
 #!/bin/bash
 #SBATCH -J subset_high_eff
-#SBATCH -p oneweek
 #SBATCH --mem=60gb
 #SBATCH --cpus-per-task=8
-#SBATCH --time=05:00:00
+#SBATCH --time=01:00:00
 #SBATCH -o %x_%j.log
 
 # Print date and time

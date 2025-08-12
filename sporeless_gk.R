@@ -226,9 +226,28 @@ meiotic_terms <- c(
   "double-strand break",
   " homologous recomb"
 )
-# Rank meiotic terms by importance
-meiotic_rank <- c(rep(1, 9), 2, 2, 3, 3)
-names(meiotic_rank) <- meiotic_terms
+# Meiosis-associated search terms ranked by importance
+meiotic_rank <- c(
+  "Spo11" = 1,
+  "Mre11" = 1,
+  "Rad50" = 1,
+  "Rad51" = 1,
+  "RecA" = 1,
+  "DMC1" = 1,
+  "Red1" = 1,
+  "Hop1" = 1,
+  "Smc5" = 1,
+  "Exo1" = 1,
+  "meio" = 2,
+  "reproduct" = 2,
+  "MutS" = 2,
+  "double-strand break" = 3,
+  " homologous recomb" = 3,
+  "SCC" = 4,
+  "recombination" = 4,
+  "crossover" = 4,
+  "telomere" = 4
+)
 # snpEff ANN severity scale
 severity_rank <- c(
   "stop_gained" = 1,
@@ -474,8 +493,16 @@ if (!file.exists(all_meiotic_prot_annot_file)) {
   all_meiotic_prot_annot <- all_meiotic_prot %>%
     left_join(gff_split) %>%
     # Remove redundant lines (gene == mRNA lines)
-    filter(Type != "mRNA") %>%
-    mutate(Protein_ID=as.character(Protein_ID))
+    filter(Type != "mRNA")
+  # Add any user annotations
+  all_meiotic_prot_annot <- all_meiotic_prot_annot %>%
+    mutate(
+      Protein_Product = case_when(
+        as.numeric(Protein_ID) == 9336431 ~
+          paste(Protein_Product, "exonuclease I (Exo1)", sep = ";"),
+        .default = Protein_Product
+      )
+    )
   # Write list of all protein IDs implicated in meiosis
   write.table(
     all_meiotic_prot_ids,
@@ -969,6 +996,8 @@ if (!file.exists(subset_tab_file)) {
     )
   }
   # Filter snpEff-annotated variants for genes of interest
+  all_meiotic_prot_annot <- all_meiotic_prot_annot %>%
+    mutate(Protein_ID = as.character(Protein_ID))
   filt_ann_vcf_meta <- split_ann_vcf_meta %>%
     filter(Protein_ID %in% as.character(all_meiotic_prot_ids)) %>%
     left_join(all_meiotic_prot_annot, relationship = "many-to-many") %>%
@@ -1227,71 +1256,67 @@ annot_split_sub_vcf <- split_sub_vcf %>%
     by = c("CHROM", "Protein_ID", "Gene_ID")
   ) %>%
   relocate(all_of(new_cols), .after = Gene_ID)
-test <- annot_split_sub_vcf %>%
+annot_split_sub_vcf <- annot_split_sub_vcf %>%
   rowwise() %>%
-  # mutate(
-  #   Effect_rank = str_split(Effect, "&"),
-  #   Effect_rank = min(severity_rank[Effect_rank], na.rm = T),
-  #   .before = 1
-  # ) %>%
+  # Rank variant effects by severity
   mutate(
-    # Collapse selected columns into one string
-    combined_text = paste(
-      c_across(c(IPR, KEGG, GO, KOG, Protein_Product)),
-      collapse = " "
+    Effect_Rank = str_split(Effect, "&"),
+    Effect_Rank = min(severity_rank[Effect_Rank], na.rm = T),
+    .before = 1
+  ) %>%
+  # Collapse all protein annotation columns into one string
+  mutate(
+    Annotations = paste(na.omit(
+      c_across(c(IPR, KEGG, GO, KOG, Protein_Product))),
+      collapse = ";"
     ),
-    # Find which patterns match this row
-    matches = list(
+    .after = Protein_Product
+  ) %>%
+  # Rank protein annotations by significance to meiosis
+  mutate(
+    # Find which meiotic search terms match annotations in each row
+    Meiotic_Terms = list(
       sapply(
         names(meiotic_rank), function(term) {
-          str_detect(combined_text, fixed(term, ignore_case = TRUE))
+          str_detect(Annotations, fixed(term, ignore_case = T))
         }
       )
     ),
-    matches = list(names(meiotic_rank)[unlist(matches)]),
-    ann_rank = list(meiotic_rank[matches]),
-    # Assign min rank among matches (if no match, NA)
-    ann_rank = if (length(ann_rank) > 0)
-      min(ann_rank)
+    Meiotic_Terms = list(names(meiotic_rank)[unlist(Meiotic_Terms)]),
+    Annot_Rank = list(meiotic_rank[Meiotic_Terms]),
+    # Assign min rank among matching meiotic terms (no match = lowest rank)
+    Annot_Rank = if (length(Annot_Rank) > 0)
+      min(Annot_Rank)
     else
-      NA_integer_,
-    matches = paste(matches, collapse = ", ")
+      max(meiotic_rank) + 1,
+    Meiotic_Terms = paste(Meiotic_Terms, collapse = ", "),
+    .after = Effect_Rank
   ) %>%
   ungroup()
 
+meiotic_gene_bed <- read_tsv(meiotic_gene_bed_file, col_names = T)
+meiotic_gene_bed <- meiotic_gene_bed %>%
+  rename(CHROM = "#CHROM")
 
-helpme <- test %>%
-  # select(Protein_ID, ann_rank, matches, IPR, KEGG, GO, KOG, Protein_Product) %>%
+# helpme <- annot_split_sub_vcf %>%
+annot_split_sub_vcf %>%
   filter(Protein_ID %in% meiotic_gene_bed$Protein_ID,
          Type == "gene",
-         is.na(ann_rank)) %>%
-  select(Protein_ID, IPR, KEGG, GO, KOG, Protein_Product) %>%
-  distinct() %>%
-  rowwise() %>%
-  mutate(
-    annotations = paste(na.omit(c_across(c(-Protein_ID))), collapse = ";")
-  ) %>%
-  ungroup() %>%
-  select(annotations)
-copilot_list <- unlist(strsplit("meiosis|meiotic|recombination|synaptonemal|crossover|homologous pairing|MSH4|MSH5|Spo11|Dmc1|Rad51|Rec8|Cohesin|SCC2|SCC3|HORMAD|ZIP1|ZIP3|ZMM|Hop1|Red1|Mer3|Mnd1|HOP2|SYCP|SYCE|telomere|chromosome segregation|gametogenesis|oogenesis|spermatogenesis", "\\|"))
-sapply(copilot_list, grep, helpme$annotations, value = T, simplify = F)
-grep("MSH4|MSH5", helpme$annotations, value = T)
-annot_split_sub_vcf %>%
-  filter(if_any(where(is.character), ~ grepl("involved in cellular and", .))) %>% 
+         Annot_Rank == max(Annot_Rank)) %>%
+  distinct(Annotations) %>%
+  # mutate(Annotations = str_split(Annotations, ";")) %>%
+  # pull(Annotations) %>%
+  # unlist() %>%
+  # unique() %>%
+  # tibble(annotations = .) %>%
+  write_tsv("my_annots2.txt")
+
+test <- read_tsv("annotation_pathways.tsv")
+test %>%
+  distinct(Pathway_Category) %>%
   View
 
-annot_split_sub_vcf %>%
-  select(
-    ROW_ID,
-    POS,
-    Start,
-    End,
-    Gene_ID,
-    Type,
-    ID,
-    `Exon_or_Intron_Rank/Total`,
-    Effect
-  )
+print("exonuclease I (Exo1) protein: 9336431")
 
 annot_split_sub_vcf %>%
   rowid_to_column() %>%
