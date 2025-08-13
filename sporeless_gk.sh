@@ -12,7 +12,7 @@ echo
 
 # Load R and bgzip modules
 module purge
-module load ver/2506 gcc/14.3.0 r/4.5.1
+module load apptainer/1.4.1 rstats/4.5.1
 Rscript --version
 echo
 
