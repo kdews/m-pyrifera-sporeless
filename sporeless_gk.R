@@ -231,7 +231,6 @@ meiotic_rank <- c(
   "Spo11" = 1,
   "Mre11" = 1,
   "Rad50" = 1,
-  "Rad51" = 1,
   "RecA" = 1,
   "DMC1" = 1,
   "Red1" = 1,
@@ -363,6 +362,7 @@ if (!file.exists(simple_meta_file)) {
 } else {
   simple_meta <- read_tsv(simple_meta_file)
 }
+n_indivs <- dim(simple_meta)[1]
 
 # Parse meiotic gene annotations
 if (!file.exists(all_meiotic_prot_annot_file)) {
@@ -1149,31 +1149,6 @@ if (!file.exists(split_sub_vcf_file)) {
       ),
       .after = ALT_IDX
     )
-  # Parse Error/Warning/Info into separate columns
-  split_sub_vcf <- split_sub_vcf %>%
-    mutate(Debug =
-             case_when(!is.na(Debug) ~ str_split(Debug, "&") %>%
-                         map(~ {
-                           key_vals <- str_split_fixed(.x, "_", 2)
-                           set_names(key_vals[, 2], key_vals[, 1])
-                         }), .default = NA)) %>%
-    unnest_longer(
-      Debug,
-      values_to = "Debug_Message",
-      indices_to = "Debug_Code",
-      keep_empty = T
-    )
-  debug_df <- split_sub_vcf %>%
-    select(CHROM,
-           POS,
-           REF,
-           ALT,
-           Effect,
-           Protein_ID,
-           Debug_Message,
-           Debug_Code)
-  # # Save debugging messages
-  # vroom_write(debug_df, debug_df_file, delim = "\t")
   split_sub_vcf <- split_sub_vcf %>%
     select(!starts_with("Debug")) %>%
     distinct()
@@ -1195,10 +1170,11 @@ if (!file.exists(split_sub_vcf_file)) {
     mutate(across(ends_with(c("_GT", "_DP_S", "_GQ")), as.integer)) %>%
     # Guess types for newly split character columns with readr::parse_guess
     mutate(across(where(is.character), parse_guess)) %>%
-    # Check for ALT_IDX == GT to sum number of genotypes with given allele
     rowwise() %>%
     mutate(
+      # Check for ALT_IDX == GT to sum number of genotypes with given allele
       N_ALT_GTS = sum(c_across(ends_with("_GT")) == ALT_IDX, na.rm = T),
+      N_CALLS = sum(!is.na(c_across(ends_with("_GT")))),
       .after = ALT_IDX
     ) %>%
     ungroup() %>%
@@ -1260,19 +1236,19 @@ if (!file.exists(split_sub_vcf_file)) {
 }
 
 # Annotate split subset VCF lines with protein information
-new_cols <- grep(
-  "^CHROM$|^Protein_ID$|^Gene_ID$",
-  names(all_meiotic_prot_annot),
-  invert = T,
-  value = T
-)
 annot_split_sub_vcf <- split_sub_vcf %>%
   mutate(Protein_ID = as.numeric(Protein_ID)) %>%
   left_join(
-    filter(all_meiotic_prot_annot, Type == "gene"),
-    by = c("CHROM", "Protein_ID", "Gene_ID")
+    filter(all_meiotic_prot_annot, Type == "gene")
   ) %>%
-  relocate(all_of(new_cols), .after = Gene_ID)
+  relocate(
+    all_of(matches(setdiff(
+      colnames(all_meiotic_prot_annot),
+      colnames(split_sub_vcf))
+    )),
+    .after = Gene_ID
+  )
+# Sort variants for analysis
 annot_split_sub_vcf <- annot_split_sub_vcf %>%
   rowwise() %>%
   # Rank variant effects by severity
@@ -1282,13 +1258,12 @@ annot_split_sub_vcf <- annot_split_sub_vcf %>%
     .before = 1
   ) %>%
   # Collapse all protein annotation columns into one string
-  mutate(
-    Annotations = paste(na.omit(
-      c_across(c(IPR, KEGG, GO, KOG, Protein_Product))),
-      collapse = ";"
-    ),
-    .after = Protein_Product
-  ) %>%
+  mutate(Annotations = paste(na.omit(unique(unlist(
+    str_split(c_across(c(
+      IPR, KEGG, GO, KOG, Protein_Product
+    )), ";")
+  ))), collapse = ";"),
+  .after = Protein_Product) %>%
   # Rank protein annotations by significance to meiosis
   mutate(
     # Find which meiotic search terms match annotations in each row
@@ -1307,67 +1282,94 @@ annot_split_sub_vcf <- annot_split_sub_vcf %>%
     else
       max(meiotic_rank) + 1,
     Meiotic_Terms = paste(Meiotic_Terms, collapse = ", "),
+    Meiotic_Terms = case_when(Meiotic_Terms == "" ~ NA,
+                              .default = Meiotic_Terms),
     .after = Effect_Rank
   ) %>%
   ungroup() %>%
   # Filter out singletons
   filter(N_ALT_GTS > 1)
-
 # Rank by effect severity, then annotation relevance, then allele rarity
 annot_split_sub_vcf <- annot_split_sub_vcf %>%
+  mutate(
+    Comb_Rank = Effect_Rank + Annot_Rank,
+    .before = Effect_Rank
+  ) %>%
   arrange(
-    Effect_Rank,
-    Annot_Rank,
-    N_ALT_GTS
+    Comb_Rank,
+    AF,
+    N_ALT_ALLELES
   )
-
 # Pivot variant table to per-sample orientation
 per_sample_variants <- annot_split_sub_vcf %>%
-  # Filter out stat columns not split on REF/ALT
+  # Drop old stat columns not split on REF/ALT
   select(-ends_with(c("_PL", "_AD"))) %>%
   pivot_longer(
-    # All columns that start with a number, underscore, then a field name
+    # Select columns that start with a number, underscore, then a field name
     cols = matches("^\\d+_"),
     # ".value" means keep field name as column
-    names_to = c("Sample_ID", ".value"),
-    names_pattern = "^(\\d+)_(.*)$"
-  ) 
-filt_per_sample_variants %>%
-  filter()
-
-annot_split_sub_vcf %>%
-  select(matches("^\\d+_")) %>%
-  sapply(class)
-
-  # mutate(across(matches("^\\d+_"), as.character)) %>%
-  # pivot_longer(
-  #   cols = matches("^\\d+_"),
-  #   names_to = c("Sample_ID", "Field"),
-  #   names_pattern = "^(\\d+)_(.*)$",
-  #   values_to = "Value"
-  # ) %>%
-  # distinct(Field)
-
-
-test <- read_tsv("annotation_pathways.tsv")
-test %>%
-  distinct(Pathway_Category) %>%
-  View
-
-
-
-annot_split_sub_vcf %>%
-  rowid_to_column() %>%
-  filter(Type != "gene") %>%
-ggplot(aes(y = rowid)) +
-  geom_segment(
-    aes(
-      x = 0,
-      xend = End-Start,
-      yend = rowid,
-      color = Type
+    names_to = c("SampleID", ".value"),
+    names_pattern = "^(\\d+)_(.*)$",
+    names_transform = list(SampleID = as.integer)
+  ) %>%
+  relocate(SampleID:last_col(), .after = Annot_Rank) %>%
+  # Merge with gametophyte metadata
+  left_join(simple_meta, relationship = "many-to-one") %>%
+  relocate(matches(colnames(simple_meta)), .after = SampleID)
+# Quality-filter samples
+filt_samp <- per_sample_variants %>%
+  filter(
+    # Keep only ALT variants
+    GT == ALT_IDX,
+    # Filter for rare minor alleles
+    AF <= 0.15,
+    # Filter out variants with high missingness
+    N_CALLS/n_indivs >= 0.8,
+    # Minimum coverage
+    DP_S >= 10,
+    # Minimum genotype quality
+    GQ >= 20
+  ) %>%
+  # Keep only variants where at least one female and male pair exist
+  filter(length(unique(Sex)) == 2, .by = c(CHROM, POS, REF, ALT)) %>%
+  # Keep top 2 individuals of each sex for each variant
+  group_by(CHROM, POS, REF, ALT, Sex) %>%
+  arrange(
+    Comb_Rank,
+    N_ALT_GTS,
+    AF,
+    desc(GQ),
+    desc(DP_S),
+    desc(AD_ALT),
+    .by_group = T
+  ) %>%
+  slice_head(n = 2) %>%
+  ungroup() %>%
+  arrange(
+    Comb_Rank,
+    N_ALT_GTS,
+    AF,
+    desc(GQ),
+    desc(DP_S),
+    desc(AD_ALT)
+  )
+# Generate ranked crosses from gametophyte codes
+cross_df <- filt_samp %>%
+  reframe(
+    expand.grid(
+      F_ID = GametophyteCode[Sex == "F"],
+      M_ID = GametophyteCode[Sex == "M"]
     ),
-    linewidth = 1
-  ) +
-  geom_text(aes(x = POS-Start, label = ALT), color = "red") +
-  theme_classic()
+    .by = -c(SampleID:PL_ALT)
+  ) %>%
+  mutate(Cross = paste(F_ID, M_ID, sep = " x "),
+         across(c(F_ID, M_ID, Cross), as.character)) %>%
+  relocate(F_ID:last_col(), .before = 1)
+# Create simple list of ranked crosses
+cross_list <- cross_df %>%
+  distinct(Cross, F_ID, M_ID) %>%
+  rowid_to_column("Rank")
+# Save dataframe and list of crosses
+write_tsv(cross_list, "crosses_for_Declan_8_13_25_detailed.tsv")
+write_tsv(cross_list, "crosses_for_Declan_8_13_25.tsv")
+

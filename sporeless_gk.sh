@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH -p gpu
-#SBATCH --mem=200gb
-#SBATCH --time=10:00:00
-#SBATCH --cpus-per-task=32
+#SBATCH --mem=180gb
+#SBATCH --time=01:00:00
+#SBATCH --cpus-per-task=24
 #SBATCH -J sporeless_gk
 #SBATCH -o %x_%j.log
 
@@ -12,8 +12,7 @@ echo
 
 # Load R and bgzip modules
 module purge
-module --latest load gcc htslib
-module load r/4.4.3
+module load ver/2506 gcc/14.3.0 r/4.5.1
 Rscript --version
 echo
 
@@ -30,6 +29,10 @@ meta_file="070721_metadata.csv"
 vcf_id_file="raw_vcf_ids.txt"
 # Annotated VCF
 ann_vcf_file="raw_haploid_559_indv_on_CI_03_genome_final.info_only.ann.vcf.gz"
+# Gene feature file
+gff_file="genes.gff"
+# CSV file of meiosis-related genes from JGI "Search" GUI
+meiotic_gene_list_file="jgi_gui_meiotic_genes.csv"
 
 # Run Rscript file
 cmd=(
@@ -38,6 +41,8 @@ cmd=(
     "$meta_file"
     "$vcf_id_file"
     "$ann_vcf_file"
+    "$gff_file"
+    "$meiotic_gene_list_file"
     "$scripts_dir"
 )
 echo "${cmd[*]}"
