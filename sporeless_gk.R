@@ -105,7 +105,7 @@ format_names <-
     # Allelic Depth
     "AD",
     # Read Depth
-    "DP",
+    "DP_S",
     # Genotype Quality
     "GQ",
     # Phred-scaled Genotype Likelihood
@@ -357,7 +357,11 @@ if (!file.exists(simple_meta_file)) {
     arrange(SampleID)
   # Check metadata table IDs versus VCF IDs
   all(simple_meta$SampleID == vcf_ids)
+  simple_meta <- simple_meta %>%
+    mutate(Sex = str_extract(GametophyteCode, "(?<=\\.)[MF](?=\\.)"))
   write_tsv(simple_meta, simple_meta_file)
+} else {
+  simple_meta <- read_tsv(simple_meta_file)
 }
 
 # Parse meiotic gene annotations
@@ -1020,7 +1024,7 @@ if (!file.exists(subset_tab_file)) {
 
 # Parse subset of full annotated VCF (including genotypes)
 if (!file.exists(split_sub_vcf_file)) {
-  # Verify subsetted VCF exists
+  # Verify subset VCF exists
   if (!file.exists(sub_vcf_file)) {
     stop(paste("Subset", sub_vcf_file, "with subset_high_eff.sh before running."))
   }
@@ -1040,7 +1044,7 @@ if (!file.exists(split_sub_vcf_file)) {
     # Mark original row IDs
     mutate(ROW_ID = row_number(), .before = "CHROM") %>%
     # Drop irrelevant cols
-    select(-c(ID, FILTER))
+    select(-c(ID, FILTER, FORMAT))
   print(paste("Colnames:", paste(colnames(sub_vcf), collapse = " ")))
   # Separate INFO col into columns named by regular expression (e.g., AC=##)
   sub_vcf <- sub_vcf %>%
@@ -1105,7 +1109,7 @@ if (!file.exists(split_sub_vcf_file)) {
     left_join(
       nmd_df, by = c("CHROM", "POS", "ALT", "Gene_ID", "Protein_ID")
     )
-  # Filter LOF & NMD cols
+  # Keep LOF & NMD col info only on matching rows
   split_sub_vcf <- split_sub_vcf %>%
     mutate(
       isLOF = case_when(
@@ -1124,20 +1128,17 @@ if (!file.exists(split_sub_vcf_file)) {
           # Keep NMD baesd on Effect criteria
           grepl(paste(lof_nmd_effs, collapse = "|"), Effect) ~ T,
         .default = F
-      )
-    ) %>%
-    mutate(
+      ),
       LOF = ifelse(isLOF, LOF, NA),
       Total_Transcripts_LOF = ifelse(isLOF, Total_Transcripts_LOF, NA),
       Percent_Transcripts_LOF = ifelse(isLOF, Percent_Transcripts_LOF, NA),
       NMD = ifelse(isNMD, NMD, NA),
       Total_Transcripts_NMD = ifelse(isNMD, Total_Transcripts_NMD, NA),
       Percent_Transcripts_NMD = ifelse(isNMD, Percent_Transcripts_NMD, NA)
-    ) %>%
-    # Guess types for newly split character columns with readr::parse_guess
-    mutate(across(.cols = where(is.character), .fns = parse_guess)) %>%
-    # Filter for only HIGH impact variants
-    filter(Impact == "HIGH")
+    )
+  # Guess types for newly split character columns with readr::parse_guess
+  split_sub_vcf <- split_sub_vcf %>%
+    mutate(across(.cols = where(is.character), .fns = parse_guess))
   # Annotate variant types (e.g., SNP, INDEL)
   split_sub_vcf <- split_sub_vcf %>%
     mutate(
@@ -1180,29 +1181,44 @@ if (!file.exists(split_sub_vcf_file)) {
   split_sub_vcf <- split_sub_vcf %>%
     # Separate "FORMAT" specified IDs
     separate_wider_delim(
-      cols = all_of(matches("\\d+")),
+      cols = all_of(matches("^\\d+$")),
       delim = ":",
       names = format_names,
       names_sep = "_"
     ) %>%
-    # Sub missing GT and PL (.) with NA
+    # Sub missing (.) with NA
     mutate(
-      across(.cols = ends_with(c("_GT", "PL")), .fns = ~ gsub("\\.", NA, .))
+      across(ends_with(c("_GT", "_PL", "_DP_S", "_GQ")), ~ gsub("\\.", NA, .))
     ) %>%
-    # Coerce genotype columns to integer class
-    mutate(across(.cols = ends_with("_GT"), .fns = as.integer)) %>%
+    # Coerce genotype (GT), sample read depth (DP_S), and genotype quality (GQ)
+    # to integers
+    mutate(across(ends_with(c("_GT", "_DP_S", "_GQ")), as.integer)) %>%
     # Guess types for newly split character columns with readr::parse_guess
-    mutate(across(.cols = where(is.character), .fns = parse_guess)) %>%
+    mutate(across(where(is.character), parse_guess)) %>%
     # Check for ALT_IDX == GT to sum number of genotypes with given allele
     rowwise() %>%
     mutate(
-      N_ALT = sum(c_across(ends_with("_GT")) == ALT_IDX, na.rm = T),
+      N_ALT_GTS = sum(c_across(ends_with("_GT")) == ALT_IDX, na.rm = T),
       .after = ALT_IDX
     ) %>%
-    ungroup()
+    ungroup() %>%
+    # Mark number of possible ALT genotypes (N_ALT_ALLELES) per site
+    mutate(
+      N_ALT_ALLELES = n(),
+      `N_ALT_GTS:REF>ALT` = paste(
+        N_ALT_GTS,
+        paste(REF, ALT, sep = ">"),
+        sep = ":",
+        collapse = ", "
+      ),
+      .by = c(CHROM, POS)
+    )
   # Parse columns with REF and ALT, matching GT to ALT_IDX
   split_sub_vcf <- split_sub_vcf %>%
     parseRefAlt()
+  # Filter for only HIGH impact variants following VCF decomposition
+  split_sub_vcf <- split_sub_vcf %>%
+    filter(Impact == "HIGH")
   # Save split table column types
   split_sub_col_types <- sapply(split_sub_vcf, function(x) class(x)[1])
   split_sub_col_types <- data.frame(column = names(split_sub_col_types),
@@ -1251,6 +1267,7 @@ new_cols <- grep(
   value = T
 )
 annot_split_sub_vcf <- split_sub_vcf %>%
+  mutate(Protein_ID = as.numeric(Protein_ID)) %>%
   left_join(
     filter(all_meiotic_prot_annot, Type == "gene"),
     by = c("CHROM", "Protein_ID", "Gene_ID")
@@ -1292,31 +1309,52 @@ annot_split_sub_vcf <- annot_split_sub_vcf %>%
     Meiotic_Terms = paste(Meiotic_Terms, collapse = ", "),
     .after = Effect_Rank
   ) %>%
-  ungroup()
+  ungroup() %>%
+  # Filter out singletons
+  filter(N_ALT_GTS > 1)
 
-meiotic_gene_bed <- read_tsv(meiotic_gene_bed_file, col_names = T)
-meiotic_gene_bed <- meiotic_gene_bed %>%
-  rename(CHROM = "#CHROM")
+# Rank by effect severity, then annotation relevance, then allele rarity
+annot_split_sub_vcf <- annot_split_sub_vcf %>%
+  arrange(
+    Effect_Rank,
+    Annot_Rank,
+    N_ALT_GTS
+  )
 
-# helpme <- annot_split_sub_vcf %>%
+# Pivot variant table to per-sample orientation
+per_sample_variants <- annot_split_sub_vcf %>%
+  # Filter out stat columns not split on REF/ALT
+  select(-ends_with(c("_PL", "_AD"))) %>%
+  pivot_longer(
+    # All columns that start with a number, underscore, then a field name
+    cols = matches("^\\d+_"),
+    # ".value" means keep field name as column
+    names_to = c("Sample_ID", ".value"),
+    names_pattern = "^(\\d+)_(.*)$"
+  ) 
+filt_per_sample_variants %>%
+  filter()
+
 annot_split_sub_vcf %>%
-  filter(Protein_ID %in% meiotic_gene_bed$Protein_ID,
-         Type == "gene",
-         Annot_Rank == max(Annot_Rank)) %>%
-  distinct(Annotations) %>%
-  # mutate(Annotations = str_split(Annotations, ";")) %>%
-  # pull(Annotations) %>%
-  # unlist() %>%
-  # unique() %>%
-  # tibble(annotations = .) %>%
-  write_tsv("my_annots2.txt")
+  select(matches("^\\d+_")) %>%
+  sapply(class)
+
+  # mutate(across(matches("^\\d+_"), as.character)) %>%
+  # pivot_longer(
+  #   cols = matches("^\\d+_"),
+  #   names_to = c("Sample_ID", "Field"),
+  #   names_pattern = "^(\\d+)_(.*)$",
+  #   values_to = "Value"
+  # ) %>%
+  # distinct(Field)
+
 
 test <- read_tsv("annotation_pathways.tsv")
 test %>%
   distinct(Pathway_Category) %>%
   View
 
-print("exonuclease I (Exo1) protein: 9336431")
+
 
 annot_split_sub_vcf %>%
   rowid_to_column() %>%
