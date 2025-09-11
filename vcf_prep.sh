@@ -20,7 +20,8 @@ else
 fi
 
 # Raw input VCF
-raw_vcf="raw_haploid_559_indv_on_CI_03_genome_final.vcf.gz"
+# raw_vcf="raw_haploid_559_indv_on_CI_03_genome_final.vcf.gz"
+raw_vcf="$1"
 vcf_header="raw_vcf_header.txt"
 vcf_ids="raw_vcf_ids.txt"
 
