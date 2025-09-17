@@ -20,10 +20,8 @@ if (require(showtext)) {
 if (interactive()) {
   wd <- "/scratch1/kdeweese/giant_kelp_scratch"
   setwd(wd)
-  # Table of individual metadata
-  meta_file <- "070721_metadata.csv"
-  # VCF ID file
-  vcf_id_file <- "raw_vcf_ids.txt"
+  # Table of sample metadata
+  sample_meta_file <- "070721_metadata.csv"
   # Annotated VCF (metadata only)
   ann_vcf_meta_file <-
     "raw_haploid_559_indv_on_CI_03_genome_final.info_only.ann.vcf.gz"
@@ -31,42 +29,53 @@ if (interactive()) {
   gff_file <- "genes.gff"
   # CSV of meiotic genes from JGI GUI
   meiotic_gene_list_file <- "jgi_gui_meiotic_genes.csv"
+  # Prefix for gene annotation table filenames
+  gene_annot_tab_base <- "Macpyr2_GeneCatalog_proteins_20220914"
   # Output directory
   outdir <- "m-pyrifera-sporeless/"
 } else {
   line_args <- commandArgs(trailingOnly = T)
-  meta_file <- line_args[1]
-  vcf_id_file <- line_args[2]
-  ann_vcf_meta_file <- line_args[3]
-  gff_file <- line_args[4]
-  meiotic_gene_list_file <- line_args[5]
+  sample_meta_file <- line_args[1]
+  ann_vcf_meta_file <- line_args[2]
+  gff_file <- line_args[3]
+  meiotic_gene_list_file <- line_args[4]
+  gene_annot_tab_base <- line_args[5]
   outdir <- line_args[6]
 }
-go_tab_file <- "Macpyr2_GeneCatalog_proteins_20220914_GO.tab.gz"
-ipr_tab_file <- "Macpyr2_GeneCatalog_proteins_20220914_IPR.tab.gz"
-kegg_tab_file <- "Macpyr2_GeneCatalog_proteins_20220914_KEGG.tab.gz"
-kog_tab_file <- "Macpyr2_GeneCatalog_proteins_20220914_KOG.tab.gz"
+# VCF ID file
+vcf_id_file <- "raw_vcf_ids.txt"
+# Gene annotation tables
+# Use prefix to get filenames
+gene_annot_tab_files <- list.files(
+  pattern = paste0(gene_annot_tab_base, ".+\\.tab\\.gz")
+)
+go_tab_file <- grep("_GO\\.", gene_annot_tab_files, value = T)
+ipr_tab_file <- grep("_IPR\\.", gene_annot_tab_files, value = T)
+kegg_tab_file <- grep("_KEGG\\.", gene_annot_tab_files, value = T)
+kog_tab_file <- grep("_KOG\\.", gene_annot_tab_files, value = T)
+
 # Output
-simple_meta_file <- "simple_metadata.tsv"
-# Output table
+# Sample ID index
+sample_idx_file <- "sample_idx.tsv"
+# Parsed VCF metadata files
 ann_vcf_meta_base <-
   tools::file_path_sans_ext(basename(ann_vcf_meta_file), compression = T)
 split_ann_vcf_meta_file <- paste0(ann_vcf_meta_base, ".split.tsv.gz")
 split_ann_col_types_file <- paste0(ann_vcf_meta_base, ".split.col_types.tsv")
+# Table of snpEff debugging messages
 debug_df_file <- paste0("debug", "_", ann_vcf_meta_base, ".split.tsv.gz")
-debug_plot <- "debug_snpeff.png"
+# Plot filenames
 var_qc_boxplot_plot <- "all_var_qc_boxplots.png"
 eff_qc_boxplot_plot <- "all_eff_qc_boxplots.png"
 all_eff_plot <- "all_eff_bar.png"
 all_impact_plot <- "all_impact_bar.png"
-top10_eff_plot <- "top10_eff_bar.png"
 all_eff_impact_type_plot <- "all_eff_impact_type_bar.png"
-meiotic_gene_list_base <- tools::file_path_sans_ext(
-  basename(meiotic_gene_list_file)
-)
-meiotic_gene_bed_file <- paste0(meiotic_gene_list_base, ".bed")
+debug_plot <- "debug_snpeff.png"
+# Meiosis-associated protein annotations
 all_meiotic_prot_ids_file <- "all_meiotic_protein_IDs.txt"
 all_meiotic_prot_annot_file <- "all_meiotic_proteins.tab"
+# 2-column tsv to subset variants of interest from VCF
+subset_tab_file <- "high_eff_subset.tsv"
 # If exists, prepend output directory to output filenames of plots
 if (dir.exists(outdir)) {
   debug_plot <- paste0(outdir, debug_plot)
@@ -74,288 +83,31 @@ if (dir.exists(outdir)) {
   eff_qc_boxplot_plot <- paste0(outdir, eff_qc_boxplot_plot)
   all_eff_plot <- paste0(outdir, all_eff_plot)
   all_impact_plot <- paste0(outdir, all_impact_plot)
-  top10_eff_plot <- paste0(outdir, top10_eff_plot)
   all_eff_impact_type_plot <- paste0(outdir, all_eff_impact_type_plot)
 }
 
-# Standard vectors of column names
-# GFF3
-gff_names <-
-  c("CHROM",
-    "Source",
-    "Type",
-    "Start",
-    "End",
-    "Score",
-    "Strand",
-    "Phase",
-    "Attributes")
-# FORMAT column names
-format_names <-
-  c(
-    # Genotype
-    "GT",
-    # Allelic Depth
-    "AD",
-    # Read Depth
-    "DP_S",
-    # Genotype Quality
-    "GQ",
-    # Phred-scaled Genotype Likelihood
-    "PL"
-  )
-# INFO column patterns
-info_names <-
-  c(
-    # Allele count in genotypes, for each ALT allele, in same order as listed
-    "AC",
-    # Allele Frequency, for each ALT allele, in the same order as listed
-    "AF",
-    # Total number of alleles in called genotypes
-    "AN",
-    # Z-score from Wilcoxon rank sum test of Alt Vs. Ref base qualities
-    "BaseQRankSum",
-    # Approximate read depth; some reads may have been filtered
-    "DP",
-    # Were any of the samples downsampled?
-    "DS",
-    # Stop position of the interval
-    "END",
-    # Phred-scaled p-value for exact test of excess heterozygosity
-    "ExcessHet",
-    # Phred-scaled p-value using Fisher's exact test to detect strand bias
-    "FS",
-    # Inbreeding coefficient as estimated from the genotype likelihoods
-    # per-sample when compared against the Hardy-Weinberg expectation
-    "InbreedingCoeff",
-    # Maximum likelihood expectation (MLE) for the allele counts
-    # (not necessarily the same as the AC), for each ALT allele,
-    # in the same order as listed
-    "MLEAC",
-    # Maximum likelihood expectation (MLE) for the allele frequency
-    # (not necessarily the same as the AF), for each ALT allele,
-    # in the same order as listed
-    "MLEAF",
-    # RMS Mapping Quality
-    "MQ",
-    # Z-score From Wilcoxon rank sum test of Alt vs. Ref read mapping qualities
-    "MQRankSum",
-    # Variant Confidence/Quality by Depth
-    "QD",
-    # Raw data (sum of squared MQ and total depth) for improved RMS Mapping
-    # Quality calculation. Incompatible with deprecated RAW_MQ formulation.
-    "RAW_MQandDP",
-    # Z-score from Wilcoxon rank sum test of Alt vs. Ref read position bias
-    "ReadPosRankSum",
-    # Symmetric Odds Ratio of 2x2 contingency table to detect strand bias
-    "SOR",
-    # Functional annotations: 'Allele | Annotation | Annotation_Impact |
-    # Gene_Name | Gene_ID | Feature_Type | Feature_ID | Transcript_BioType |
-    # Rank | HGVS.c | HGVS.p | cDNA.pos / cDNA.length | CDS.pos / CDS.length |
-    # AA.pos / AA.length | Distance | ERRORS / WARNINGS / INFO'
-    "ANN",
-    # Predicted loss of function effects for this variant.
-    # Format: 'Gene_Name | Gene_ID | Number_transcripts | Percent_affected'
-    "LOF",
-    # Predicted nonsense mediated decay effects for this variant.
-    # Format: 'Gene_Name | Gene_ID | Number_transcripts | Percent_affected'
-    "NMD"
-  )
-# ANN column
-ann_names <-
-  c(
-    "Allele",
-    "Effect",
-    "Impact",
-    "Protein_ID",
-    "Gene_ID",
-    "Feature_Type",
-    "Feature_ID",
-    "Transcript_BioType",
-    "Exon_or_Intron_Rank/Total",
-    "HGVS.c",
-    "HGVS.p",
-    "cDNA_position/cDNA_len",
-    "CDS_position/CDS_len",
-    "Protein_position/Protein_len",
-    "Dist_to_Feature",
-    "Debug"
-  )
-# LOF column
-lof_names <-
-  c("Protein_ID",
-    "Gene_ID",
-    "Total_Transcripts_LOF",
-    "Percent_Transcripts_LOF")
-# NMD column
-nmd_names <-
-  c("Protein_ID",
-    "Gene_ID",
-    "Total_Transcripts_NMD",
-    "Percent_Transcripts_NMD")
-# LOF/NMD Effects
-lof_nmd_effs <-
-  c(
-    "frameshift_variant",
-    "stop_gained",
-    "splice_acceptor_variant",
-    "splice_donor_variant",
-    "start_lost"
-  )
-# Meiosis-associated search terms
-meiotic_terms <- c(
-  "Spo11",
-  "Mre11",
-  "Rad50",
-  "Rad51",
-  "RecA",
-  "DMC1",
-  "Red1",
-  "Hop1",
-  "Smc5",
-  "MutS",
-  "meio",
-  "reproduct",
-  "double-strand break",
-  " homologous recomb"
-)
-# Meiosis-associated search terms ranked by importance
-meiotic_rank <- c(
-  "Spo11" = 1,
-  "Mre11" = 1,
-  "Rad50" = 1,
-  "RecA" = 1,
-  "DMC1" = 1,
-  "Red1" = 1,
-  "Hop1" = 1,
-  "Smc5" = 1,
-  "Exo1" = 1,
-  "meio" = 2,
-  "reproduct" = 2,
-  "MutS" = 2,
-  "double-strand break" = 3,
-  " homologous recomb" = 3,
-  "SCC" = 4,
-  "recombination" = 4,
-  "crossover" = 4,
-  "telomere" = 4
-)
-# snpEff ANN severity scale
-severity_rank <- c(
-  "stop_gained" = 1,
-  "frameshift_variant" = 2,
-  "stop_lost" = 3,
-  "start_lost" = 4,
-  "splice_acceptor_variant" = 5,
-  "splice_donor_variant" = 6,
-  "exon_loss_variant" = 7,
-  "splice_region_variant" = 8,
-  "conservative_inframe_deletion" = 9,
-  "conservative_inframe_insertion" = 10,
-  "5_prime_UTR_variant" = 11,
-  "3_prime_UTR_variant" = 12,
-  "intron_variant" = 13
-)
-
-# Functions
-# Selecting function for columns containing commas in any values
-contains_commas <- function(df) {
-  nms <- df %>%
-    select(where(is.character)) %>%
-    keep(~ any(replace_na(str_detect(.x, ","), FALSE))) %>%
-    names()
-  # Include ALT
-  nms <- nms[nms %in% c(info_names, "ALT")]
-  # Don't include snpEff colnames
-  nms <- nms[!(nms %in% c("ANN", "LOF", "NMD"))]
-}
-# Fix long labels for plotting
-pretty_labs <- function(my_vector) {
-  my_vector %>%
-    # Remove odd characters
-    str_replace_all(c(
-      "_variant" = "",
-      "_" = " ",
-      "&" = " & "
-    )) %>%
-    str_replace_all(regex("prime", ignore_case = T), "'")
-  # # Wrap long labels
-  # str_wrap(width = 20)
-}
-# Parse REF and ALT for AD and PL columns
-parseRefAlt <- function(.data) {
-  vars <- names(.data) %>%
-    str_subset("_GT$") %>%
-    sub("GT$", "", .)
-  for (var in vars) {
-    ad_col <- paste0(var, "AD")
-    pl_col <- paste0(var, "PL")
-    gt_col <- paste0(var, "GT")
-    ad_ref_col <- paste0(ad_col, "_REF")
-    ad_alt_col <- paste0(ad_col, "_ALT")
-    pl_ref_col <- paste0(pl_col, "_REF")
-    pl_alt_col <- paste0(pl_col, "_ALT")
-    .data <- .data %>%
-      rowwise() %>%
-      mutate(
-        !!ad_ref_col := if (is.na(.data[[ad_col]]) ||
-                            is.na(.data[[gt_col]]))
-          NA
-        else
-          as.integer(str_split_i(.data[[ad_col]], ",", 1)),
-        !!ad_alt_col := if (is.na(.data[[gt_col]]) ||
-                            is.na(.data[[ad_col]]) ||
-                            .data[[gt_col]] == 0)
-          NA
-        else
-          as.integer(
-            str_split_i(
-              .data[[ad_col]], ",", .data[[gt_col]] + 1
-            )
-          ),
-        !!pl_ref_col := if (is.na(.data[[pl_col]]) ||
-                            is.na(.data[[gt_col]]))
-          NA
-        else
-          as.integer(str_split_i(.data[[pl_col]], ",", 1)),
-        !!pl_alt_col := if (is.na(.data[[gt_col]]) ||
-                            is.na(.data[[pl_col]]) ||
-                            .data[[gt_col]] == 0)
-          NA
-        else
-          as.integer(
-            str_split_i(
-              .data[[pl_col]], ",", .data[[gt_col]] + 1
-            )
-          )
-      ) %>%
-      ungroup()
-  }
-  .data
-}
+# Load shared functions and objects
+source("m-pyrifera-sporeless/vcf_parsing_functions.R")
 
 # Data analysis
-# Save simplified table of sample IDs and gametophyte codes
-if (!file.exists(simple_meta_file)) {
-  # Read individual metadata
-  metadata <- read_csv(meta_file)
+# Table correlating sample IDs and gametophyte codes
+if (!file.exists(sample_idx_file)) {
+  # Read sample metadata
+  sample_meta <- read_csv(sample_meta_file)
   vcf_ids <- read_table(vcf_id_file, col_names = "vcfSampleID")
   vcf_ids <- vcf_ids %>%
     arrange(vcfSampleID) %>%
     pull(vcfSampleID)
-  simple_meta <- metadata %>%
+  sample_idx <- sample_meta %>%
     select(SampleID, GametophyteCode) %>%
     unique() %>%
     arrange(SampleID)
-  # Check metadata table IDs versus VCF IDs
-  all(simple_meta$SampleID == vcf_ids)
-  simple_meta <- simple_meta %>%
+  # Check ID index versus VCF IDs
+  all(sample_idx$SampleID == vcf_ids)
+  sample_idx <- sample_idx %>%
     mutate(Sex = str_extract(GametophyteCode, "(?<=\\.)[MF](?=\\.)"))
-  write_tsv(simple_meta, simple_meta_file)
-} else {
-  simple_meta <- read_tsv(simple_meta_file)
+  write_tsv(sample_idx, sample_idx_file)
 }
-n_indivs <- dim(simple_meta)[1]
 
 # Parse meiotic gene annotations
 if (!file.exists(all_meiotic_prot_annot_file)) {
@@ -405,31 +157,8 @@ if (!file.exists(all_meiotic_prot_annot_file)) {
     # Fill missing protein and transcript IDs using gene ID grouping
     group_by(Gene_ID) %>%
     fill(Protein_ID, Transcript_ID, Protein_Product, .direction = "downup")
-  
-  # Select genes of interest
-  # Use CSV from JGI GUI search results
-  if (!file.exists(meiotic_gene_bed_file)) {
-    # Write BED file to subset VCF
-    meiotic_gene_list <- read_csv(meiotic_gene_list_file)
-    meiotic_gene_bed <- meiotic_gene_list %>%
-      mutate(Strand = gsub("\\(|\\)", "", Strand)) %>%
-      select(
-        CHROM = Scaffold,
-        Gene_Start = Start,
-        Gene_End = End,
-        Strand,
-        Protein_ID = `Protein Id`,
-        Transcript_ID = `Transcript Id`,
-        Model_Name = Name
-      )
-    meiotic_gene_bed_export <- meiotic_gene_bed %>%
-      rename("#CHROM" = CHROM)
-    write_tsv(meiotic_gene_bed_export, meiotic_gene_bed_file, col_names = T)
-  } else {
-    meiotic_gene_bed <- read_tsv(meiotic_gene_bed_file, col_names = T)
-    meiotic_gene_bed <- meiotic_gene_bed %>%
-      rename(CHROM = "#CHROM")
-  }
+  # Read meiotic protein IDs from JGI GUI
+  meiotic_gene_list <- read_csv(meiotic_gene_list_file)
   # Filter JGI annotation tables with search terms
   meiotic_key <- paste(meiotic_terms, collapse = "|")
   go_tab <- read_tsv(go_tab_file) %>%
@@ -467,8 +196,8 @@ if (!file.exists(all_meiotic_prot_annot_file)) {
       filter(grepl(meiotic_key, KOG, ignore.case = T)) %>%
       distinct(proteinId),
     # Add previously identified protein IDs
-    meiotic_gene_bed %>%
-      select(proteinId = Protein_ID)
+    meiotic_gene_list %>%
+      select(proteinId = `Protein Id`)
   ) %>%
     distinct() %>%
     pull(proteinId)
@@ -520,7 +249,8 @@ if (!file.exists(all_meiotic_prot_annot_file)) {
   all_meiotic_prot_annot <- read_tsv(all_meiotic_prot_annot_file)
 }
 
-# Write 2-column table (CHR POS) to subset VCF
+# Write 2-column (CHR POS) table to subset VCF
+# Keep only high impact variants in meiosis genes
 if (!file.exists(subset_tab_file)) {
   # Parse and QC annotated VCF metadata (without genotypes)
   if (!file.exists(split_ann_vcf_meta_file)) {
@@ -697,7 +427,6 @@ if (!file.exists(subset_tab_file)) {
       !file.exists(eff_qc_boxplot_plot) &
       !file.exists(all_eff_plot) &
       !file.exists(all_impact_plot) &
-      !file.exists(top10_eff_plot) &
       !file.exists(all_eff_impact_type_plot)
     ) {
       print("Plotting Effect QC boxplots...")

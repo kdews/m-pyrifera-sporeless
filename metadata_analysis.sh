@@ -3,7 +3,7 @@
 #SBATCH --mem=180gb
 #SBATCH --time=01:00:00
 #SBATCH --cpus-per-task=24
-#SBATCH -J sporeless_gk
+#SBATCH -J metadata_analysis
 #SBATCH -o %x_%j.log
 
 # Print date and time
@@ -17,32 +17,32 @@ Rscript --version
 echo
 
 # R script to run
-rscript="sporeless_gk.R"
+rscript="metadata_analysis.R"
 
 # Input
 # Scripts directory
 scripts_dir="m-pyrifera-sporeless/"
 rscript="${scripts_dir}${rscript}"
 # Table of individual metadata
-meta_file="070721_metadata.csv"
-# VCF ID file
-vcf_id_file="raw_vcf_ids.txt"
-# Annotated VCF
+sample_meta_file="070721_metadata.csv"
+# snpEff-annotated VCF (metadata only)
 ann_vcf_file="raw_haploid_559_indv_on_CI_03_genome_final.info_only.ann.vcf.gz"
 # Gene feature file
 gff_file="genes.gff"
 # CSV file of meiosis-related genes from JGI "Search" GUI
 meiotic_gene_list_file="jgi_gui_meiotic_genes.csv"
+# Prefix for gene annotation table filenames
+gene_annot_tab_base="Macpyr2_GeneCatalog_proteins_20220914"
 
 # Run Rscript file
 cmd=(
     "Rscript"
     "$rscript"
-    "$meta_file"
-    "$vcf_id_file"
+    "$sample_meta_file"
     "$ann_vcf_file"
     "$gff_file"
     "$meiotic_gene_list_file"
+    "$gene_annot_tab_base"
     "$scripts_dir"
 )
 echo "${cmd[*]}"
