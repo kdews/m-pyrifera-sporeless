@@ -24,15 +24,20 @@ rscript="metadata_analysis.R"
 scripts_dir="m-pyrifera-sporeless/"
 rscript="${scripts_dir}${rscript}"
 # Table of individual metadata
-sample_meta_file="070721_metadata.csv"
+# sample_meta_file="070721_metadata.csv"
+sample_meta_file="$1"
 # snpEff-annotated VCF (metadata only)
-ann_vcf_file="raw_haploid_559_indv_on_CI_03_genome_final.info_only.ann.vcf.gz"
+# ann_vcf_file="raw_haploid_559_indv_on_CI_03_genome_final.info_only.ann.vcf.gz"
+ann_vcf_file="$2"
 # Gene feature file
-gff_file="genes.gff"
+# gff_file="genes.gff"
+gff_file="$3"
 # CSV file of meiosis-related genes from JGI "Search" GUI
-meiotic_gene_list_file="jgi_gui_meiotic_genes.csv"
+# meiotic_gene_list_file="jgi_gui_meiotic_genes.csv"
+meiotic_gene_list_file="$4"
 # Prefix for gene annotation table filenames
-gene_annot_tab_base="Macpyr2_GeneCatalog_proteins_20220914"
+# gene_annot_tab_base="Macpyr2_GeneCatalog_proteins_20220914"
+gene_annot_tab_base="$5"
 
 # Run Rscript file
 cmd=(

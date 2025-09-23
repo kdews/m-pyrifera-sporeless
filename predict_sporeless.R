@@ -42,6 +42,13 @@ sub_vcf_base <-
   tools::file_path_sans_ext(basename(sub_vcf_file), compression = T)
 split_sub_vcf_file <- paste0(sub_vcf_base, ".split.tsv.gz")
 split_sub_col_types_file <- paste0(sub_vcf_base, ".split.col_types.tsv")
+prot_split_sub_vcf_file <- paste0(sub_vcf_base, ".prot.split.tsv.gz")
+prot_split_sub_col_types_file <- paste0(
+  sub_vcf_base, ".prot.split.col_types.tsv"
+)
+# Ranked crosses
+cross_table_file <- "cross_table.tsv"
+cross_list_file <- "cross_list.tsv"
 
 # Load shared functions and objects
 source("m-pyrifera-sporeless/vcf_parsing_functions.R")
@@ -271,146 +278,192 @@ if (!file.exists(split_sub_vcf_file)) {
   )
 }
 
-# Annotate split subset VCF lines with protein information
-annot_split_sub_vcf <- split_sub_vcf %>%
-  mutate(Protein_ID = as.numeric(Protein_ID)) %>%
-  left_join(
-    filter(all_meiotic_prot_annot, Type == "gene")
-  ) %>%
-  relocate(
-    all_of(matches(setdiff(
-      colnames(all_meiotic_prot_annot),
-      colnames(split_sub_vcf))
-    )),
-    .after = Gene_ID
+# Add protein annotation to table and rank by variant severity and relevance
+if (!file.exists(prot_split_sub_vcf_file)) {
+  # Annotate split subset VCF lines with protein information
+  prot_split_sub_vcf <- split_sub_vcf %>%
+    mutate(Protein_ID = as.numeric(Protein_ID)) %>%
+    left_join(
+      filter(all_meiotic_prot_annot, Type == "gene")
+    ) %>%
+    relocate(
+      all_of(matches(setdiff(
+        colnames(all_meiotic_prot_annot),
+        colnames(split_sub_vcf))
+      )),
+      .after = Gene_ID
+    )
+  
+  # Sort variants for analysis
+  prot_split_sub_vcf <- prot_split_sub_vcf %>%
+    rowwise() %>%
+    # Rank variant effects by severity
+    mutate(
+      Effect_Rank = str_split(Effect, "&"),
+      Effect_Rank = min(severity_rank[Effect_Rank], na.rm = T),
+      .before = 1
+    ) %>%
+    # Collapse all protein annotation columns into one string
+    mutate(Annotations = paste(na.omit(unique(unlist(
+      str_split(c_across(c(
+        IPR, KEGG, GO, KOG, Protein_Product
+      )), ";")
+    ))), collapse = ";"),
+    .after = Protein_Product) %>%
+    # Rank protein annotations by significance to meiosis
+    mutate(
+      # Find which meiotic search terms match annotations in each row
+      Meiotic_Terms = list(
+        sapply(
+          names(meiotic_rank), function(term) {
+            str_detect(Annotations, fixed(term, ignore_case = T))
+          }
+        )
+      ),
+      Meiotic_Terms = list(names(meiotic_rank)[unlist(Meiotic_Terms)]),
+      Annot_Rank = list(meiotic_rank[Meiotic_Terms]),
+      # Assign min rank among matching meiotic terms (no match = lowest rank)
+      Annot_Rank = if (length(Annot_Rank) > 0)
+        min(Annot_Rank)
+      else
+        max(meiotic_rank) + 1,
+      Meiotic_Terms = paste(Meiotic_Terms, collapse = ", "),
+      Meiotic_Terms = case_when(Meiotic_Terms == "" ~ NA,
+                                .default = Meiotic_Terms),
+      .after = Effect_Rank
+    ) %>%
+    ungroup() %>%
+    # Filter out singletons
+    filter(N_ALT_GTS > 1)
+  # Rank by effect severity, then annotation relevance, then allele rarity
+  prot_split_sub_vcf <- prot_split_sub_vcf %>%
+    mutate(
+      Comb_Rank = Effect_Rank + Annot_Rank,
+      .before = Effect_Rank
+    ) %>%
+    arrange(
+      Comb_Rank,
+      AF,
+      N_ALT_ALLELES
+    )
+  # Save split table column types
+  prot_split_sub_col_types <- sapply(prot_split_sub_vcf, function(x) class(x)[1])
+  prot_split_sub_col_types <- data.frame(column = names(prot_split_sub_col_types),
+                                    type = unname(prot_split_sub_col_types))
+  write.table(
+    prot_split_sub_col_types,
+    prot_split_sub_col_types_file,
+    sep = "\t",
+    row.names = F,
+    quote = F
   )
-
-# Sort variants for analysis
-annot_split_sub_vcf <- annot_split_sub_vcf %>%
-  rowwise() %>%
-  # Rank variant effects by severity
-  mutate(
-    Effect_Rank = str_split(Effect, "&"),
-    Effect_Rank = min(severity_rank[Effect_Rank], na.rm = T),
-    .before = 1
-  ) %>%
-  # Collapse all protein annotation columns into one string
-  mutate(Annotations = paste(na.omit(unique(unlist(
-    str_split(c_across(c(
-      IPR, KEGG, GO, KOG, Protein_Product
-    )), ";")
-  ))), collapse = ";"),
-  .after = Protein_Product) %>%
-  # Rank protein annotations by significance to meiosis
-  mutate(
-    # Find which meiotic search terms match annotations in each row
-    Meiotic_Terms = list(
-      sapply(
-        names(meiotic_rank), function(term) {
-          str_detect(Annotations, fixed(term, ignore_case = T))
-        }
-      )
-    ),
-    Meiotic_Terms = list(names(meiotic_rank)[unlist(Meiotic_Terms)]),
-    Annot_Rank = list(meiotic_rank[Meiotic_Terms]),
-    # Assign min rank among matching meiotic terms (no match = lowest rank)
-    Annot_Rank = if (length(Annot_Rank) > 0)
-      min(Annot_Rank)
-    else
-      max(meiotic_rank) + 1,
-    Meiotic_Terms = paste(Meiotic_Terms, collapse = ", "),
-    Meiotic_Terms = case_when(Meiotic_Terms == "" ~ NA,
-                              .default = Meiotic_Terms),
-    .after = Effect_Rank
-  ) %>%
-  ungroup() %>%
-  # Filter out singletons
-  filter(N_ALT_GTS > 1)
-# Rank by effect severity, then annotation relevance, then allele rarity
-annot_split_sub_vcf <- annot_split_sub_vcf %>%
-  mutate(
-    Comb_Rank = Effect_Rank + Annot_Rank,
-    .before = Effect_Rank
-  ) %>%
-  arrange(
-    Comb_Rank,
-    AF,
-    N_ALT_ALLELES
+  # Save parsed table
+  vroom_write(prot_split_sub_vcf, prot_split_sub_vcf_file, delim = "\t")
+} else {
+  # Load col type metadata
+  prot_split_sub_col_types <- read.delim(
+    prot_split_sub_col_types_file,
+    stringsAsFactors = F
   )
-
-# Pivot variant table to per-sample orientation
-per_sample_variants <- annot_split_sub_vcf %>%
-  # Drop old stat columns not split on REF/ALT
-  select(-ends_with(c("_PL", "_AD"))) %>%
-  pivot_longer(
-    # Select columns that start with a number, underscore, then a field name
-    cols = matches("^\\d+_"),
-    # ".value" means keep field name as column
-    names_to = c("SampleID", ".value"),
-    names_pattern = "^(\\d+)_(.*)$",
-    names_transform = list(SampleID = as.integer)
-  ) %>%
-  relocate(SampleID:last_col(), .after = Annot_Rank) %>%
-  # Merge with sample ID index
-  left_join(sample_idx, relationship = "many-to-one") %>%
-  relocate(matches(colnames(sample_idx)), .after = SampleID)
-
-# Quality-filter samples
-filt_samp <- per_sample_variants %>%
-  filter(
-    # Keep only ALT variants
-    GT == ALT_IDX,
-    # Filter for rare minor alleles
-    AF <= 0.15,
-    # Filter out variants with high missingness
-    N_CALLS/n_indivs >= 0.8,
-    # Minimum coverage
-    DP_S >= 10,
-    # Minimum genotype quality
-    GQ >= 20
-  ) %>%
-  # Keep only variants where at least one female and male pair exist
-  filter(length(unique(Sex)) == 2, .by = c(CHROM, POS, REF, ALT)) %>%
-  # Keep top 2 samples of each sex for each variant
-  group_by(CHROM, POS, REF, ALT, Sex) %>%
-  arrange(
-    Comb_Rank,
-    N_ALT_GTS,
-    AF,
-    desc(GQ),
-    desc(DP_S),
-    desc(AD_ALT),
-    .by_group = T
-  ) %>%
-  slice_head(n = 2) %>%
-  ungroup() %>%
-  arrange(
-    Comb_Rank,
-    N_ALT_GTS,
-    AF,
-    desc(GQ),
-    desc(DP_S),
-    desc(AD_ALT)
+  # Create a `col_types` specification for vroom
+  vroom_col_types <- do.call(
+    cols, setNames(lapply(prot_split_sub_col_types$type, function(t)
+      switch(
+        t,
+        character = col_character(),
+        numeric   = col_double(),
+        integer   = col_integer(),
+        logical   = col_logical(),
+        factor    = col_factor(),
+        Date      = col_date(),
+        col_guess()  # fallback
+      )), prot_split_sub_col_types$column)
   )
+  prot_split_sub_vcf <- vroom(
+    prot_split_sub_vcf_file,
+    delim = "\t",
+    col_types = vroom_col_types
+  )
+}
 
-# Generate ranked crosses from gametophyte codes
-cross_df <- filt_samp %>%
-  reframe(
-    expand.grid(
-      F_ID = GametophyteCode[Sex == "F"],
-      M_ID = GametophyteCode[Sex == "M"]
-    ),
-    .by = -c(SampleID:PL_ALT)
-  ) %>%
-  mutate(Cross = paste(F_ID, M_ID, sep = " x "),
-         across(c(F_ID, M_ID, Cross), as.character)) %>%
-  relocate(F_ID:last_col(), .before = 1)
-# Create simple list of ranked crosses
-cross_list <- cross_df %>%
-  distinct(Cross, F_ID, M_ID) %>%
-  rowid_to_column("Rank")
+# Reframe data to rank crosses by variant rank
+if (!file.exists(cross_table_file) & !file.exists(cross_list_file)){
+  # Pivot variant table to per-sample orientation
+  per_sample_variants <- prot_split_sub_vcf %>%
+    # Drop old stat columns not split on REF/ALT
+    select(-ends_with(c("_PL", "_AD"))) %>%
+    pivot_longer(
+      # Select columns that start with a number, underscore, then a field name
+      cols = matches("^\\d+_"),
+      # ".value" means keep field name as column
+      names_to = c("SampleID", ".value"),
+      names_pattern = "^(\\d+)_(.*)$",
+      names_transform = list(SampleID = as.integer)
+    ) %>%
+    relocate(SampleID:last_col(), .after = Annot_Rank) %>%
+    # Merge with sample ID index
+    left_join(sample_idx, relationship = "many-to-one") %>%
+    relocate(matches(colnames(sample_idx)), .after = SampleID)
+  
+  # Quality-filter samples
+  filt_samp <- per_sample_variants %>%
+    filter(
+      # Keep only ALT variants
+      GT == ALT_IDX,
+      # Filter for rare minor alleles
+      AF <= 0.15,
+      # Filter out variants with high missingness
+      N_CALLS/n_indivs >= 0.8,
+      # Minimum coverage
+      DP_S >= 10,
+      # Minimum genotype quality
+      GQ >= 20
+    ) %>%
+    # Keep only variants where at least one female and male pair exist
+    filter(length(unique(Sex)) == 2, .by = c(CHROM, POS, REF, ALT)) %>%
+    # Keep top 2 samples of each sex for each variant
+    group_by(CHROM, POS, REF, ALT, Sex) %>%
+    arrange(
+      Comb_Rank,
+      N_ALT_GTS,
+      AF,
+      desc(GQ),
+      desc(DP_S),
+      desc(AD_ALT),
+      .by_group = T
+    ) %>%
+    slice_head(n = 2) %>%
+    ungroup() %>%
+    arrange(
+      Comb_Rank,
+      N_ALT_GTS,
+      AF,
+      desc(GQ),
+      desc(DP_S),
+      desc(AD_ALT)
+    )
+  
+  # Generate ranked crosses from gametophyte codes
+  cross_df <- filt_samp %>%
+    reframe(
+      expand.grid(
+        F_ID = GametophyteCode[Sex == "F"],
+        M_ID = GametophyteCode[Sex == "M"]
+      ),
+      .by = -c(SampleID:PL_ALT)
+    ) %>%
+    mutate(Cross = paste(F_ID, M_ID, sep = " x "),
+           across(c(F_ID, M_ID, Cross), as.character)) %>%
+    relocate(F_ID:last_col(), .before = 1)
+  # Create simple list of ranked crosses
+  cross_list <- cross_df %>%
+    distinct(Cross, F_ID, M_ID) %>%
+    rowid_to_column("Rank")
+  
+  # Save detailed dataframe of crosses
+  write_tsv(cross_df, cross_table_file)
+  # Save basic list of crosses
+  write_tsv(cross_list, cross_list_file)
+}
 
-# Save dataframe and list of crosses
-write_tsv(cross_list, "crosses_for_Declan_8_13_25_detailed.tsv")
-write_tsv(cross_list, "crosses_for_Declan_8_13_25.tsv")
 

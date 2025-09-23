@@ -83,4 +83,6 @@ sbatch predict_sporeless.sh high_eff_subset_<input>.ann.vcf.gz
 ```
 ##### Output files
 - `high_eff_subset_<input>.ann.split.tsv.gz`: table of putative high impact meiotic variants (split annotated VCF) with genotypes
-- `<crosses_list>`: predicted non-reproductive crosses
+- `high_eff_subset_<input>.ann.prot.split.tsv.gz`: same table as above with protein annotation columns and rows ranked by variant severity and relevance to meiosis
+- `cross_table.tsv`: detailed table of predicted non-reproductive crosses
+- `cross_list.tsv`: highly simplified table (Rank, Cross_ID, F_genotype, M_genotype) of predicted non-reproductive crosses
