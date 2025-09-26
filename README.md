@@ -64,11 +64,17 @@ sbatch metadata_analysis.sh <sample_metadata>.csv <input>.ann.vcf.gz <genes>.gff
 - `all_meiotic_protein_IDs.txt`: list of protein IDs implicated in meiosis
 ###### Plots
 - `all_var_qc_boxplots.png`: variant quality control boxplots
+![alt text](https://github.com/kdews/m-pyrifera-sporeless/blob/main/all_var_qc_boxplots.png)
 - `all_eff_qc_boxplots.png`: effect quality control boxplots
+![alt text](https://github.com/kdews/m-pyrifera-sporeless/blob/main/all_eff_qc_boxplots.png)
 - `all_eff_bar.png`: barplot summary of all observed variant effects
+![alt text](https://github.com/kdews/m-pyrifera-sporeless/blob/main/all_eff_bar.png)
 - `all_impact_bar.png`: basic distribution plot of impacts
+![alt text](https://github.com/kdews/m-pyrifera-sporeless/blob/main/all_impact_bar.png)
 - `all_eff_impact_type_bar.png`: barplot of Variant Type vs Impact/Effect
+![alt text](https://github.com/kdews/m-pyrifera-sporeless/blob/main/all_eff_impact_type_bar.png)
 - `debug_snpeff.png`: barplot of snpEff debugging messages
+![alt text](https://github.com/kdews/m-pyrifera-sporeless/blob/main/debug_snpeff.png)
 
 ### 6. Subset high impact variants in meiosis-associated genes
 ```
