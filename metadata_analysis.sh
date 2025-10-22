@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH -p gpu
+#SBATCH -J metadata_analysis
 #SBATCH --mem=180gb
 #SBATCH --time=01:00:00
 #SBATCH --cpus-per-task=24
-#SBATCH -J metadata_analysis
 #SBATCH -o %x_%j.log
 
 # Print date and time
