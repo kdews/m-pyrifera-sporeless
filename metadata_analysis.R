@@ -114,7 +114,7 @@ if (!file.exists(all_meiotic_prot_annot_file)) {
   # Parse gene feature file
   gff <- vroom(gff_file, delim = "\t", comment = "#", col_names = gff_names)
   print(paste("GFF colnames:", paste(colnames(gff), collapse = " ")))
-  # Separate INFO col into columns named by regular expression (e.g., AC=##)
+  # Separate Attributes col into columns named by regular expression (e.g., AC=##)
   gff_split <- gff %>%
     mutate(Attributes = str_split(Attributes, ";") %>%
              map(~ {
